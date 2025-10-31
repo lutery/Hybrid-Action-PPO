@@ -21,16 +21,16 @@ class HyPPO(HyOnPolicyAlgorithm):
     }
     def __init__(
         self,
-        policy: Union[str, Type[HyActorCriticPolicy]],
-        env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
-        n_steps: int = 2048,
+        policy: Union[str, Type[HyActorCriticPolicy]], # 动作策略模型类型
+        env: Union[GymEnv, str], # 环境实例或环境ID
+        learning_rate: Union[float, Schedule] = 3e-4, # 学习率或学习率调度函数
+        n_steps: int = 2048, # 每次更新前收集的时间步数 todo
         batch_size: int = 64,
         n_epochs: int = 10,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
+        gamma: float = 0.99, # 折扣因子
+        gae_lambda: float = 0.95, # GAE参数
+        clip_range: Union[float, Schedule] = 0.2, # PPO裁剪范围
+        clip_range_vf: Union[None, float, Schedule] = None, # 价值函数裁剪范围 todo
         normalize_advantage: bool = True,
         ent_coef_con: float = 0.0,
         ent_coef_disc: float = 0.0,

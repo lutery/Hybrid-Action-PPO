@@ -11,7 +11,7 @@ import os
 # 设置环境变量 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 
-
+# 封装一层gym环境，让stable-baselines3可以使用,无法不封装则会出现因为无法准确识别gym版本导致gym step 参数兼容的报错
 class GymToGym21Wrapper(gym.Env):
     """
     将gym.Env包装成gymnasium.Env以兼容ptan
