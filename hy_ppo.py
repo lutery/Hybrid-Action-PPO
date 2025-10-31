@@ -6,8 +6,8 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
-from drl_utils.algorithms.hppo.hy_policies import HyActorCriticCnnPolicy, HyActorCriticPolicy, HyBasePolicy, HyMultiInputActorCriticPolicy
-from drl_utils.algorithms.hppo.hy_on_policy_algo import HyOnPolicyAlgorithm
+from hy_policies import HyActorCriticCnnPolicy, HyActorCriticPolicy, HyBasePolicy, HyMultiInputActorCriticPolicy
+from hy_on_policy_algo import HyOnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
@@ -68,7 +68,7 @@ class HyPPO(HyOnPolicyAlgorithm):
             seed=seed,
             _init_setup_model=False,
             supported_action_spaces=(
-                spaces.Dict
+                spaces.Dict, spaces.Tuple
             ),
         )
 

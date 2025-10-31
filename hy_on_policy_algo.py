@@ -8,9 +8,9 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
-from drl_utils.algorithms.hppo.hy_policies import HyActorCriticPolicy
-from drl_utils.algorithms.hppo.hy_buffer import HYRolloutBuffer
-from drl_utils.algorithms.hppo.hy_base_class import HyBaseAlgorithm
+from hy_policies import HyActorCriticPolicy
+from hy_buffer import HYRolloutBuffer
+from hy_base_class import HyBaseAlgorithm
 
 SelfHyOnPolicyAlgorithm = TypeVar("SelfHyOnPolicyAlgorithm", bound="HyOnPolicyAlgorithm")
 
@@ -121,8 +121,29 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             # Rescale and perform action
             clipped_actions_disc = actions_disc
             clipped_actions_con = np.clip(actions_con, self.action_space_con.low, self.action_space_con.high)
-            clipped_actions = np.concatenate([clipped_actions_disc[:,None], clipped_actions_con], axis=1)
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
+            
+            # 根据动作空间类型决定动作格式
+            if isinstance(self.action_space, spaces.Dict):
+                # Dict 类型动作空间
+                clipped_actions = np.concatenate([clipped_actions_disc[:,None], clipped_actions_con], axis=1)
+            elif isinstance(self.action_space, spaces.Tuple):
+                # Tuple 类型动作空间，创建元组列表
+                clipped_actions = [(int(disc), con) for disc, con in zip(clipped_actions_disc.flatten(), clipped_actions_con)]
+            else:
+                raise TypeError(f"Unsupported action space type: {type(self.action_space)}")
+                
+            # 处理环境可能返回的不同数量的值
+            step_result = env.step(clipped_actions)
+            if len(step_result) == 5:
+                # 新版本 gym API: obs, reward, terminated, truncated, info
+                new_obs, rewards, terminated, truncated, infos = step_result
+                # 将 terminated 和 truncated 合并为 dones
+                dones = np.logical_or(terminated, truncated)
+            elif len(step_result) == 4:
+                # 旧版本 gym API: obs, reward, done, info
+                new_obs, rewards, dones, infos = step_result
+            else:
+                raise ValueError(f"Unexpected number of values returned by env.step(): {len(step_result)}")
             self.num_timesteps += env.num_envs
 
             callback.update_locals(locals())

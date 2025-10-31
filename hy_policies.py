@@ -24,7 +24,7 @@ from stable_baselines3.common.torch_layers import (
     NatureCNN,
 )
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
-from drl_utils.algorithms.hppo.hyper_layer import HyMlpExtractor
+from hyper_layer import HyMlpExtractor
 
 SelfHyBaseModel = TypeVar("SelfHyBaseModel", bound="HyBaseModel")
 
@@ -239,8 +239,18 @@ class HyBasePolicy(HyBaseModel, ABC):
     def __init__(self, *args, squash_output: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self._squash_output = squash_output
-        self.action_space_disc:spaces.Dict = self.action_space['discrete_action']
-        self.action_space_con:spaces.Box = self.action_space['continuous_action']
+        
+        # 处理不同类型的动作空间
+        if isinstance(self.action_space, spaces.Dict):
+            # Dict 类型动作空间
+            self.action_space_disc = self.action_space['discrete_action']
+            self.action_space_con = self.action_space['continuous_action']
+        elif isinstance(self.action_space, spaces.Tuple):
+            # Tuple 类型动作空间，假设第一个是离散动作，第二个是连续动作
+            self.action_space_disc = self.action_space[0]
+            self.action_space_con = self.action_space[1]
+        else:
+            raise TypeError(f"Unsupported action space type: {type(self.action_space)}. Expected Dict or Tuple.")
 
     @staticmethod
     def _dummy_schedule(progress_remaining: float) -> float:

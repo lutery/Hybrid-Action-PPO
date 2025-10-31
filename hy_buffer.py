@@ -9,23 +9,39 @@ from typing import NamedTuple, Optional, Union,Generator, Union
 from stable_baselines3.common.buffers import BaseBuffer
 
 
-def get_action_dim(action_space: spaces.Space) -> int:
+def get_action_dim(action_space: spaces.Space) -> tuple:
     if isinstance(action_space, spaces.Box):
-        return int(np.prod(action_space.shape))
+        return int(np.prod(action_space.shape)), 0  # (连续动作维度, 离散动作维度)
     elif isinstance(action_space, spaces.Discrete):
         # Action is an int
-        return 1
+        return 0, 1  # (连续动作维度, 离散动作维度)
     elif isinstance(action_space, spaces.MultiDiscrete):
         # Number of discrete actions
-        return int(len(action_space.nvec))
+        return 0, int(len(action_space.nvec))  # (连续动作维度, 离散动作维度)
     elif isinstance(action_space, spaces.MultiBinary):
         # Number of binary actions
         assert isinstance(
             action_space.n, int
         ), "Multi-dimensional MultiBinary action space is not supported. You can flatten it instead."
-        return int(action_space.n)
+        return 0, int(action_space.n)  # (连续动作维度, 离散动作维度)
     elif isinstance(action_space, spaces.Dict):
-        return int(np.prod(action_space['continuous_action'].shape)), 1
+        return int(np.prod(action_space['continuous_action'].shape)), 1  # (连续动作维度, 离散动作维度)
+    elif isinstance(action_space, spaces.Tuple):
+        # Tuple 类型动作空间，假设第一个是离散动作，第二个是连续动作
+        continuous_dim = 0
+        discrete_dim = 0
+        
+        if isinstance(action_space[0], spaces.Box):
+            continuous_dim = int(np.prod(action_space[0].shape))
+        elif isinstance(action_space[0], (spaces.Discrete, spaces.MultiDiscrete, spaces.MultiBinary)):
+            discrete_dim = 1 if isinstance(action_space[0], spaces.Discrete) else int(len(action_space[0].nvec)) if isinstance(action_space[0], spaces.MultiDiscrete) else int(action_space[0].n)
+            
+        if isinstance(action_space[1], spaces.Box):
+            continuous_dim = int(np.prod(action_space[1].shape))
+        elif isinstance(action_space[1], (spaces.Discrete, spaces.MultiDiscrete, spaces.MultiBinary)):
+            discrete_dim = 1 if isinstance(action_space[1], spaces.Discrete) else int(len(action_space[1].nvec)) if isinstance(action_space[1], spaces.MultiDiscrete) else int(action_space[1].n)
+            
+        return continuous_dim, discrete_dim  # (连续动作维度, 离散动作维度)
     else:
         raise NotImplementedError(f"{action_space} action space is not supported")
 

@@ -121,8 +121,18 @@ class HyBaseAlgorithm(ABC):
             self.action_space = env.action_space
             self.n_envs = env.num_envs
             self.env = env
-            self.action_space_con = self.action_space['continuous_action']
-            self.action_space_disc = self.action_space['discrete_action']
+            
+            # 处理不同类型的动作空间
+            if isinstance(self.action_space, spaces.Dict):
+                # Dict 类型动作空间
+                self.action_space_con = self.action_space['continuous_action']
+                self.action_space_disc = self.action_space['discrete_action']
+            elif isinstance(self.action_space, spaces.Tuple):
+                # Tuple 类型动作空间，假设第一个是离散动作，第二个是连续动作
+                self.action_space_disc = self.action_space[0]
+                self.action_space_con = self.action_space[1]
+            else:
+                raise TypeError(f"Unsupported action space type: {type(self.action_space)}. Expected Dict or Tuple.")
 
             # get VecNormalize object if needed
             self._vec_normalize_env = unwrap_vec_normalize(env)
