@@ -54,34 +54,36 @@ class HyBaseAlgorithm(ABC):
 
     def __init__(
         self,
-        policy: Union[str, Type[BasePolicy]],
-        env: Union[GymEnv, str, None],
-        learning_rate: Union[float, Schedule],
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        stats_window_size: int = 100,
-        tensorboard_log: Optional[str] = None,
-        verbose: int = 0,
-        device: Union[th.device, str] = "auto",
-        support_multi_env: bool = False,
-        monitor_wrapper: bool = True,
-        seed: Optional[int] = None,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
+        policy: Union[str, Type[BasePolicy]],  # 使用多层感知机策略
+        env: Union[GymEnv, str, None],  # 环境实例或环境ID  
+        learning_rate: Union[float, Schedule], # 学习率或学习率调度函数
+        policy_kwargs: Optional[Dict[str, Any]] = None, # 策略网络的额外参数传递
+        stats_window_size: int = 100, # todo
+        tensorboard_log: Optional[str] = None, # tensorboard日志目录
+        verbose: int = 0, # todo 这个应该是日志等级
+        device: Union[th.device, str] = "auto", # 运行的设备
+        support_multi_env: bool = False, # 是否支持多环境
+        monitor_wrapper: bool = True, # 是否使用Monitor包装器
+        seed: Optional[int] = None, # 随机种子
+        use_sde: bool = False, # todo
+        sde_sample_freq: int = -1, # todo
+        supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None, # todo
     ) -> None:
         if isinstance(policy, str):
             self.policy_class = self._get_policy_from_name(policy)
         else:
             self.policy_class = policy
 
+        # self.policy_class 是一个Type策略类
+
         self.device = get_device(device)
         if verbose >= 1:
             print(f"Using {self.device} device")
 
         self.verbose = verbose
-        self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs
+        self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs # 策略网络的额外参数传递
 
-        self.num_timesteps = 0
+        self.num_timesteps = 0 
         # Used for updating schedules
         self._total_timesteps = 0
         # Used for computing fps, it is updated at each call of learn()
@@ -114,7 +116,10 @@ class HyBaseAlgorithm(ABC):
         self._vec_normalize_env: Optional[VecNormalize] = None
         # Create and wrap the env if needed
         if env is not None:
+            # 根据传入的env参数创建环境实例，如果传入的是字符串则创建对应的环境实例
+            # 否则估计就直接将传入的环境实例进行包装并返回
             env = maybe_make_env(env, self.verbose)
+            # 
             env = self._wrap_env(env, self.verbose, monitor_wrapper)
 
             self.observation_space = env.observation_space
@@ -162,20 +167,65 @@ class HyBaseAlgorithm(ABC):
 
     @staticmethod
     def _wrap_env(env: GymEnv, verbose: int = 0, monitor_wrapper: bool = True) -> VecEnv:
-        if not isinstance(env, VecEnv):
+        '''
+        这里将环境包装为一个向量的环境，如果是图片的环境则进行通道转置（HWC -> CHW）
+
+        param env: 环境实例
+        param verbose: 日志等级
+        param monitor_wrapper: 是否使用Monitor包装器
+        return: 包装后的向量化环境实例
+        '''
+        if not isinstance(env, VecEnv): # 如果不是并行环境，则包装为并行环境
             # Patch to support gym 0.21/0.26 and gymnasium
+            # 复Gym不同版本之间的兼容性问题
+            '''
+            功能:
+                统一 Gym 0.21/0.26 和 Gymnasium 的接口差异
+                确保环境符合当前SB3期望的API格式
+                处理 reset() 返回值格式（旧版本返回obs，新版本返回obs+info）
+                处理 step() 返回值格式差异
+            '''
             env = _patch_env(env)
+            # 判断是否需要包装 Monitor 包装器
             if not is_wrapped(env, Monitor) and monitor_wrapper:
                 if verbose >= 1:
                     print("Wrapping the env with a `Monitor` wrapper")
                 env = Monitor(env)
             if verbose >= 1:
                 print("Wrapping the env in a DummyVecEnv.")
+            # 向量化环境包装，使得可以多个环境并行运行
+            # 这里传入一个lambda函数，返回env实例，是因为内部认为传入的参数是一个环境创建函数
+            # 而不是一个实例
             env = DummyVecEnv([lambda: env])  # type: ignore[list-item, return-value]
 
+        # 检查 observation_space 是否有嵌套的空间
+        '''
+        作用: 检查观察空间是否包含不支持的嵌套结构
+        检查内容:
+        Dict空间中不能再嵌套Dict或Tuple
+        Tuple空间中不能再嵌套Dict或Tuple
+        如果发现嵌套: 抛出异常
+
+        # ✅ 允许的观察空间
+            obs_space = spaces.Dict({
+                'image': spaces.Box(0, 255, (64, 64, 3)),
+                'vector': spaces.Box(-1, 1, (4,))
+            })
+
+            # ❌ 不允许的嵌套（Dict中嵌套Dict）
+            obs_space = spaces.Dict({
+                'sensors': spaces.Dict({  # 嵌套的Dict
+                    'camera': spaces.Box(...),
+                    'lidar': spaces.Box(...)
+                })
+            })
+        '''
         check_for_nested_spaces(env.observation_space)
 
         if not is_vecenv_wrapped(env, VecTransposeImage):
+            # VecTransposeImage 应该是一个图像预处理包装器，即将图像数据的通道维度进行转置
+            # 将图像数据从 (H, W, C) 转换为 (C, H, W)
+            # 如果环境的观察是图片则执行这个包装器流程
             wrap_with_vectranspose = False
             if isinstance(env.observation_space, spaces.Dict):
                 for space in env.observation_space.spaces.values():
@@ -238,6 +288,9 @@ class HyBaseAlgorithm(ABC):
         ]
 
     def _get_policy_from_name(self, policy_name: str) -> Type[BasePolicy]:
+        '''
+        通过策略别名或者实际的策略类名获取策略类
+        '''
         if policy_name in self.policy_aliases:
             return self.policy_aliases[policy_name]
         else:

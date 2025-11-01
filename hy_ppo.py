@@ -14,6 +14,7 @@ from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 SelfHyPPO = TypeVar("SelfHyPPO", bound="HyPPO")
 
 class HyPPO(HyOnPolicyAlgorithm):
+    # 不同的策略模型别名映射
     policy_aliases: ClassVar[Dict[str, Type[HyBasePolicy]]] = {
         "MlpPolicy": HyActorCriticPolicy,
         "CnnPolicy": HyActorCriticCnnPolicy,
@@ -31,20 +32,20 @@ class HyPPO(HyOnPolicyAlgorithm):
         gae_lambda: float = 0.95, # GAE参数
         clip_range: Union[float, Schedule] = 0.2, # PPO裁剪范围
         clip_range_vf: Union[None, float, Schedule] = None, # 价值函数裁剪范围 todo
-        normalize_advantage: bool = True,
-        ent_coef_con: float = 0.0,
-        ent_coef_disc: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
-        stats_window_size: int = 100,
-        tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
+        normalize_advantage: bool = True, # todo
+        ent_coef_con: float = 0.0, # todo
+        ent_coef_disc: float = 0.0, # todo
+        vf_coef: float = 0.5, # todo
+        max_grad_norm: float = 0.5, # 梯度裁剪
+        use_sde: bool = False, # todo 
+        sde_sample_freq: int = -1, # todo
+        target_kl: Optional[float] = None, # todo
+        stats_window_size: int = 100, # todo
+        tensorboard_log: Optional[str] = None, # todo
+        policy_kwargs: Optional[Dict[str, Any]] = None, # todo
+        verbose: int = 0, # todo
+        seed: Optional[int] = None, # todo
+        device: Union[th.device, str] = "auto", # 运行的设备
         _init_setup_model: bool = True,
     ):
         super().__init__(
