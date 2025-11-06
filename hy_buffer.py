@@ -70,7 +70,7 @@ class HYRolloutBuffer(BaseBuffer):
 
     def __init__(
         self,
-        buffer_size: int,
+        buffer_size: int, 
         observation_space: spaces.Space,
         action_space: spaces.Space,
         device: Union[th.device, str] = "auto",
@@ -81,8 +81,8 @@ class HYRolloutBuffer(BaseBuffer):
         self.buffer_size = buffer_size
         self.observation_space = observation_space
         self.action_space = action_space
-        self.obs_shape = get_obs_shape(observation_space)
-        self.action_con_dim, self.action_disc_dim = get_action_dim(action_space)
+        self.obs_shape = get_obs_shape(observation_space) # 应对不同类型的观测空间，获取观测的形状的帮助方法
+        self.action_con_dim, self.action_disc_dim = get_action_dim(action_space) # 获取连续和离散动作的维度
         self.pos = 0
         self.full = False
         self.device = get_device(device)
@@ -94,6 +94,9 @@ class HYRolloutBuffer(BaseBuffer):
 
 
     def reset(self) -> None:
+        '''
+        重置缓存区的缓存
+        '''
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
         self.actions_disc = np.zeros((self.buffer_size, self.n_envs, self.action_disc_dim), dtype=np.float32)
         self.actions_con = np.zeros((self.buffer_size, self.n_envs, self.action_con_dim), dtype=np.float32)

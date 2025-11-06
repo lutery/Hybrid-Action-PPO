@@ -67,13 +67,14 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
         self.max_grad_norm = max_grad_norm
 
         if _init_setup_model:
+            # 初始化模型
             self._setup_model()
 
     def _setup_model(self) -> None:
-        self._setup_lr_schedule()
-        self.set_random_seed(self.seed)
+        self._setup_lr_schedule() # 这里应该是创建学习率衰减的算法
+        self.set_random_seed(self.seed) # 设置随机种子，方便复现
 
-        buffer_cls = HYRolloutBuffer
+        buffer_cls = HYRolloutBuffer # 创建样本缓存
         self.rollout_buffer = buffer_cls(
             self.n_steps,
             self.observation_space,
@@ -83,6 +84,8 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
         )
+
+        # 创建动作策略网络
         self.policy = self.policy_class(  # type: ignore[assignment]
             self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
         )
