@@ -69,6 +69,12 @@ class HyBaseAlgorithm(ABC):
         sde_sample_freq: int = -1, # todo
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None, # todo
     ) -> None:
+        '''
+        再base类中，主要的工作：
+        1. 确认参数和环境是否匹配
+        2. 创建并包装环境实例
+        '''
+
         if isinstance(policy, str):
             self.policy_class = self._get_policy_from_name(policy)
         else:
@@ -119,7 +125,6 @@ class HyBaseAlgorithm(ABC):
             # 根据传入的env参数创建环境实例，如果传入的是字符串则创建对应的环境实例
             # 否则估计就直接将传入的环境实例进行包装并返回
             env = maybe_make_env(env, self.verbose)
-            # 
             env = self._wrap_env(env, self.verbose, monitor_wrapper)
 
             self.observation_space = env.observation_space
@@ -128,6 +133,7 @@ class HyBaseAlgorithm(ABC):
             self.env = env
             
             # 处理不同类型的动作空间
+            # 分离离散动作和连续动作
             if isinstance(self.action_space, spaces.Dict):
                 # Dict 类型动作空间
                 self.action_space_con = self.action_space['continuous_action']
@@ -140,27 +146,46 @@ class HyBaseAlgorithm(ABC):
                 raise TypeError(f"Unsupported action space type: {type(self.action_space)}. Expected Dict or Tuple.")
 
             # get VecNormalize object if needed
-            self._vec_normalize_env = unwrap_vec_normalize(env)
+            # 获取向量化包装器（可能为空，如果没有使用VecNormalize包装器的话）
+            '''
+            VecNormalize 是一个特殊的环境包装器，用于：
+
+            标准化观察值（归一化到均值0、方差1）
+            标准化奖励
+            跟踪运行统计信息（均值、方差）
+            需要单独保存：训练时收集的统计信息需要在测试/部署时使用，所以需要单独保存和加载
+
+            获取原始观察：在某些情况下需要访问未标准化的原始观察值 todo 查看
+            '''
+            self._vec_normalize_env = unwrap_vec_normalize(env) # todo 查看哪里使用
 
             if supported_action_spaces is not None:
+                # 这里应该是判断环境的动作空间类型是否在支持的范围内
+                # todo 查看实际传递的值是什么
                 assert isinstance(self.action_space, supported_action_spaces), (
                     f"The algorithm only supports {supported_action_spaces} as action spaces "
                     f"but {self.action_space} was provided"
                 )
 
             if not support_multi_env and self.n_envs > 1:
+                # 这里同样是判断是否支持多环境
                 raise ValueError(
                     "Error: the model does not support multiple envs; it requires " "a single vectorized environment."
                 )
 
             # Catch common mistake: using MlpPolicy/CnnPolicy instead of MultiInputPolicy
+            # 这段代码在判断：当观察空间是字典类型（spaces.Dict）时，用户是否错误地使用了 MlpPolicy 或 CnnPolicy。
             if policy in ["MlpPolicy", "CnnPolicy"] and isinstance(self.observation_space, spaces.Dict):
                 raise ValueError(f"You must use `MultiInputPolicy` when working with dict observation space, not {policy}")
 
             if self.use_sde and not isinstance(self.action_space_con, spaces.Box):
+                # sde是针对连续动作空间添加噪音进行探索时，所添加的噪音是连续的而不是每次都是随机的
+                # 这样可以保证探索采样的连续性，保证模型正常的进行训练
+                # 而这个功能仅针对连续动作空间有效，如果是离散动作则不能使用这个方法，所以会在这里进行判断
                 raise ValueError("generalized State-Dependent Exploration (gSDE) can only be used with continuous actions.")
 
             if isinstance(self.action_space_con, spaces.Box):
+                # 这里判断连续动作是否有边界，而不是无穷大
                 assert np.all(
                     np.isfinite(np.array([self.action_space_con.low, self.action_space_con.high]))
                 ), "Continuous action space must have a finite lower and upper bound"
