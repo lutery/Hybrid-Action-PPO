@@ -237,6 +237,9 @@ class HyBaseModel(nn.Module):
 class HyBasePolicy(HyBaseModel, ABC):
     features_extractor: BaseFeaturesExtractor
     def __init__(self, *args, squash_output: bool = False, **kwargs):
+        '''
+        这边的主要作用就是提取动作空间中的离散和连续部分
+        '''
         super().__init__(*args, **kwargs)
         self._squash_output = squash_output
         
@@ -327,6 +330,9 @@ class HyActorCriticPolicy(HyBasePolicy):
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
     ):
+        '''
+        net_arch 是用于定义策略网络和价值网络架构的参数，它控制神经网络的层数和每层的神经元数量。
+        '''
         if optimizer_kwargs is None:
             optimizer_kwargs = {}
             if optimizer_class == th.optim.Adam:
@@ -353,8 +359,9 @@ class HyActorCriticPolicy(HyBasePolicy):
             net_arch = net_arch[0]
 
         if net_arch is None:
+            # 如果没有定义网络架构，使用默认值
             if features_extractor_class == NatureCNN:
-                net_arch = []
+                net_arch = [] # todo 为啥如果是 NatureCNN 就用空列表
             else:
                 net_arch = dict(pi=[64, 64], vf=[64, 64])
 
