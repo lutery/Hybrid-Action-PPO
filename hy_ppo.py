@@ -84,13 +84,15 @@ class HyPPO(HyOnPolicyAlgorithm):
         if self.env is not None:
             # Check that `n_steps * n_envs > 1` to avoid NaN
             # when doing advantage normalization
-            buffer_size = self.env.num_envs * self.n_steps
+            buffer_size = self.env.num_envs * self.n_steps # todo 为啥要这么计算？
             assert buffer_size > 1 or (
                 not normalize_advantage
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
             # Check that the rollout buffer size is a multiple of the mini-batch size
-            untruncated_batches = buffer_size // batch_size
+            untruncated_batches = buffer_size // batch_size # todo
             if buffer_size % batch_size > 0:
+                # 这段警告代码检查 batch_size（小批量大小）是否是 buffer_size（缓冲区大小）的因数，如果不是，会产生一个截断的小批量，可能影响训练效果。
+                # 可能影响到normalize_advantage的效果
                 warnings.warn(
                     f"You have specified a mini-batch size of {batch_size},"
                     f" but because the `RolloutBuffer` is of size `n_steps * n_envs = {buffer_size}`,"
@@ -113,6 +115,7 @@ class HyPPO(HyOnPolicyAlgorithm):
         super()._setup_model()
 
         # Initialize schedules for policy/value clipping
+        # 
         self.clip_range = get_schedule_fn(self.clip_range)
         if self.clip_range_vf is not None:
             if isinstance(self.clip_range_vf, (float, int)):
