@@ -91,6 +91,7 @@ class HyBaseModel(nn.Module):
 
     def make_features_extractor(self) -> BaseFeaturesExtractor:
         """Helper method to create a features extractor."""
+        """工厂方法，创建特征提取器，可以设置不同的特征提取器类和参数"""
         return self.features_extractor_class(self.observation_space, **self.features_extractor_kwargs)
 
     def extract_features(self, obs: th.Tensor, features_extractor: BaseFeaturesExtractor) -> th.Tensor:
@@ -266,9 +267,18 @@ class HyBasePolicy(HyBaseModel, ABC):
 
     @staticmethod
     def init_weights(module: nn.Module, gain: float = 1) -> None:
+        """
+        使用正交初始化方法初始化权重
+        
+        参数:
+            module: 要初始化的模块
+            gain: 缩放因子，控制初始权重的大小
+        """
         if isinstance(module, (nn.Linear, nn.Conv2d)):
+            # 对线性层和卷积层使用正交初始化
             nn.init.orthogonal_(module.weight, gain=gain)
             if module.bias is not None:
+                # 偏置初始化为0
                 module.bias.data.fill_(0.0)
 
     @abstractmethod
@@ -331,6 +341,8 @@ class HyActorCriticPolicy(HyBasePolicy):
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
     ):
         '''
+        在这里是构建了一个连续、离散动作预测、价值动作预测的网络
+
         net_arch 是用于定义策略网络和价值网络架构的参数，它控制神经网络的层数和每层的神经元数量。
         '''
         if optimizer_kwargs is None:
@@ -372,8 +384,11 @@ class HyActorCriticPolicy(HyBasePolicy):
         self.share_features_extractor = share_features_extractor
         if not share_features_extractor:
             raise "share_features_extractor must be True"
+        # 创建公共特征提取器
         self.features_extractor = self.make_features_extractor()
+        # 这里应该说特征提取输出的维度
         self.features_dim = self.features_extractor.features_dim
+        # todo 这两个属性是干啥的
         self.pi_features_extractor = self.features_extractor
         self.vf_features_extractor = self.features_extractor
 
@@ -381,6 +396,7 @@ class HyActorCriticPolicy(HyBasePolicy):
         dist_kwargs = None
         # Keyword arguments for gSDE distribution
         if use_sde:
+            # todo 参数的作用
             dist_kwargs = {
                 "full_std": full_std,
                 "squash_output": squash_output,
@@ -391,8 +407,24 @@ class HyActorCriticPolicy(HyBasePolicy):
         self.use_sde = use_sde
         self.dist_kwargs = dist_kwargs
 
-        self.action_dist_disc = make_proba_distribution(self.action_space_disc, dist_kwargs=None)
-        self.action_dist_con = make_proba_distribution(self.action_space_con, use_sde=use_sde, dist_kwargs=dist_kwargs)
+        # 根据动作空间类型创建对应概率分布对象的工厂函数
+        '''
+        def make_proba_distribution(
+            action_space: spaces.Space,        # 动作空间
+            use_sde: bool = False,             # 是否使用gSDE（仅连续动作）
+            dist_kwargs: Optional[Dict[str, Any]] = None  # 分布的额外参数
+        ) -> Distribution:
+            """
+            返回与动作空间对应的概率分布对象
+    """ 
+        '''
+        # 离散动作空间 -> CategoricalDistribution
+        # 假设 action_space_disc = spaces.Discrete(5)
+        self.action_dist_disc = make_proba_distribution(self.action_space_disc, dist_kwargs=None) # 返回: CategoricalDistribution 实例
+        
+        # 连续动作空间 -> DiagGaussianDistribution
+        # 假设 action_space_con = spaces.Box(low=-1, high=1, shape=(3,))
+        self.action_dist_con = make_proba_distribution(self.action_space_con, use_sde=use_sde, dist_kwargs=dist_kwargs) # 返回: DiagGaussianDistribution 实例
 
         self._build(lr_schedule)
 
@@ -421,6 +453,9 @@ class HyActorCriticPolicy(HyBasePolicy):
         return data
 
     def _build_mlp_extractor(self) -> None:
+        '''
+        构建动作、价值嵌入预测网络
+        '''
         self.mlp_extractor = HyMlpExtractor(
             self.features_dim,
             net_arch=self.net_arch,
@@ -430,43 +465,54 @@ class HyActorCriticPolicy(HyBasePolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         self._build_mlp_extractor()
-        latent_dim_pi = self.mlp_extractor.latent_dim_pi
+        latent_dim_pi = self.mlp_extractor.latent_dim_pi # 获取动作网络最后一层的嵌入维度
 
+        # todo 创建动作的分布对象的网络部分 看起来是可以用于动作采样预测
         self.action_net_disc = self.action_dist_disc.proba_distribution_net(latent_dim=latent_dim_pi)
         self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
             latent_dim=latent_dim_pi, log_std_init=self.log_std_init
         )
+        # 构建价值网络的输出预测层
         self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
         if self.ortho_init:
+            # 是否使用正交初始化（Orthogonal Initialization） 的开关，用于控制神经网络权重的初始化方式
+            #  为不同模块指定不同的 gain 值
+            # 不同的GAIN值的意义查看md文档
             module_gains = {
-                self.features_extractor: np.sqrt(2),
-                self.mlp_extractor: np.sqrt(2),
-                self.action_net_con: 0.01,
-                self.action_net_disc: 0.01,
-                self.value_net: 1,
+                self.features_extractor: np.sqrt(2), # CNN特征提取器
+                self.mlp_extractor: np.sqrt(2),# 三头网络
+                self.action_net_con: 0.01,# 连续动作输出层
+                self.action_net_disc: 0.01,# 离散动作输出层
+                self.value_net: 1,# 价值网络输出层
             }
+
+            # 对每个模块应用正交初始化
             for module, gain in module_gains.items():
                 module.apply(partial(self.init_weights, gain=gain))
         value_parameters = [
-            self.value_net.parameters(), 
-            self.mlp_extractor.value_net.parameters(),
-            self.features_extractor.parameters()
+            self.value_net.parameters(),  # 价值预测网络
+            self.mlp_extractor.value_net.parameters(), # 价值嵌入预测网络
+            self.features_extractor.parameters() # 公共特征提取网络 todo 为啥公共特征提取要放在这里优化？
         ]
+        # todo 看起来像一次性将所有的动作价值预测参数全部提取出来
         self.value_parameters = [p for group in value_parameters for p in group]
 
+        # todo 看起来像是将所有的离散动作价值预测参数全部提取出来展平
         disc_parameters = [
-            self.action_net_disc.parameters(),
-            self.mlp_extractor.policy_net_disc.parameters()
+            self.action_net_disc.parameters(), # 离散动作预测网络
+            self.mlp_extractor.policy_net_disc.parameters() #离散动作嵌入预测网络
         ]
         self.disc_parameters = [p for group in disc_parameters for p in group]
         
+        # todo 看起来像是将所有连续动作价值预测参数全部提取出来展平
         con_parameters = [
-            self.action_net_con.parameters(),
-            [self.log_std],
-            self.mlp_extractor.policy_net_con.parameters()
+            self.action_net_con.parameters(), # 连续动作预测网络
+            [self.log_std],  # 连续动作方差预测网络
+            self.mlp_extractor.policy_net_con.parameters() # 连续动作嵌入预测网络
         ]
         self.con_parameters = [p for group in con_parameters for p in (group if isinstance(group, list) else list(group))]
         
+        # 构建参数优化器
         self.value_optimizer = self.optimizer_class(self.value_parameters, lr=lr_schedule(1), **self.optimizer_kwargs)
         self.disc_optimizer = self.optimizer_class(self.disc_parameters, lr=lr_schedule(1), **self.optimizer_kwargs)
         self.con_optimizer = self.optimizer_class(self.con_parameters, lr=lr_schedule(1), **self.optimizer_kwargs)
@@ -605,6 +651,10 @@ class HyMultiInputActorCriticPolicy(HyActorCriticPolicy):
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
     ):
+        '''
+        todo 讲解这里是干嘛的
+        但是这里貌似也没干嘛？就是调用了父类的构造函数，也没什么其他的动作
+        '''
         super().__init__(
             observation_space,
             action_space,

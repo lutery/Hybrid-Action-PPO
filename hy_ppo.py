@@ -75,6 +75,7 @@ class HyPPO(HyOnPolicyAlgorithm):
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
+        # 如果想要做大归一化则需要多个样本数据，所以这里需要校验
         if normalize_advantage:
             assert (
                 batch_size > 1

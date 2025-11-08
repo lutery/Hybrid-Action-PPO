@@ -85,7 +85,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             n_envs=self.n_envs,
         )
 
-        # 创建动作策略网络
+        # 创建动作策略、价值预测网络
         self.policy = self.policy_class(  # type: ignore[assignment]
             self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
         )
