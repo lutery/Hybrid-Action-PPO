@@ -89,21 +89,21 @@ class HyBaseAlgorithm(ABC):
         self.verbose = verbose
         self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs # 策略网络的额外参数传递
 
-        self.num_timesteps = 0 
+        self.num_timesteps = 0  # todo
         # Used for updating schedules
-        self._total_timesteps = 0
+        self._total_timesteps = 0 # todo 总经过时间
         # Used for computing fps, it is updated at each call of learn()
         self._num_timesteps_at_start = 0
         self.seed = seed
-        self.action_noise: Optional[ActionNoise] = None
+        self.action_noise: Optional[ActionNoise] = None # 本项目没用到
         self.start_time = 0.0
         self.learning_rate = learning_rate
         self.tensorboard_log = tensorboard_log
-        self._last_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
-        self._last_episode_starts = None  # type: Optional[np.ndarray]
+        self._last_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] 存储上一帧的观察
+        self._last_episode_starts = None  # type: Optional[np.ndarray] 存储
         # When using VecNormalize:
         self._last_original_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
-        self._episode_num = 0
+        self._episode_num = 0 # 感觉应该是完成的生命周期的数量
         # Used for gSDE only
         self.use_sde = use_sde
         self.sde_sample_freq = sde_sample_freq
@@ -112,8 +112,8 @@ class HyBaseAlgorithm(ABC):
         self._current_progress_remaining = 1.0
         # Buffers for logging
         self._stats_window_size = stats_window_size
-        self.ep_info_buffer = None  # type: Optional[deque]
-        self.ep_success_buffer = None  # type: Optional[deque]
+        self.ep_info_buffer = None  # type: Optional[deque] 创建一个存储模型step返回info信息的缓冲区
+        self.ep_success_buffer = None  # type: Optional[deque] todo
         # For logging (and TD3 delayed updates)
         self._n_updates = 0  # type: int
         # Whether the user passed a custom logger or not
@@ -351,6 +351,13 @@ class HyBaseAlgorithm(ABC):
         tb_log_name: str = "run",
         progress_bar: bool = False,
     ) -> Tuple[int, BaseCallback]:
+        '''
+        total_timesteps: todo
+        callback: todo
+        reset_num_timesteps: 这个有点像是否重置缓冲区的作用
+        tf_log_name: todo
+        progress_bar: todo
+        '''
         self.start_time = time.time_ns()
 
         if self.ep_info_buffer is None or reset_num_timesteps:
@@ -359,20 +366,25 @@ class HyBaseAlgorithm(ABC):
             self.ep_success_buffer = deque(maxlen=self._stats_window_size)
 
         if self.action_noise is not None:
+            # 本项目没用到，一定是None
             self.action_noise.reset()
 
         if reset_num_timesteps:
+            # 重置标识
             self.num_timesteps = 0
             self._episode_num = 0
         else:
+            # 如果没重置则统计总经过时间
+            # 应该会有传入True和False的情况
             total_timesteps += self.num_timesteps
         self._total_timesteps = total_timesteps
-        self._num_timesteps_at_start = self.num_timesteps
+        self._num_timesteps_at_start = self.num_timesteps # todo 记录起始的时间
 
         if reset_num_timesteps or self._last_obs is None:
+            # 这里应该是判断是否是重置或者第一帧
             assert self.env is not None
-            self._last_obs = self.env.reset()  # type: ignore[assignment]
-            self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool)
+            self._last_obs = self.env.reset()  # type: ignore[assignment] 记录最近的一帧
+            self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool) # 记录开启状态标识
             if self._vec_normalize_env is not None:
                 self._last_original_obs = self._vec_normalize_env.get_original_obs()
 

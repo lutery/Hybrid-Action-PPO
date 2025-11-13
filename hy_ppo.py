@@ -115,12 +115,18 @@ class HyPPO(HyOnPolicyAlgorithm):
         super()._setup_model()
 
         # Initialize schedules for policy/value clipping
-        # 
+        # 初始化 PPO 裁剪范围调度，动态调整裁剪范围，在训练前期可以采用较大的梯度
+        # 在训练后期限制梯度的大小 todo 看后续时如何使用的？
         self.clip_range = get_schedule_fn(self.clip_range)
+        # ========== 第3步：初始化价值函数裁剪范围（可选）==========
         if self.clip_range_vf is not None:
+            # # 确保 clip_range_vf 是正数
+            # todo 看后续是如何使用的？
             if isinstance(self.clip_range_vf, (float, int)):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
-
+            
+            # # 转换为调度函数
+            # 推荐不裁剪价值，除非特殊情况
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
     def train(self) -> None:
