@@ -86,7 +86,7 @@ class HyBaseAlgorithm(ABC):
         if verbose >= 1:
             print(f"Using {self.device} device")
 
-        self.verbose = verbose
+        self.verbose = verbose # 控制日志的详细程度，比如debug日志、info日志等
         self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs # 策略网络的额外参数传递
 
         self.num_timesteps = 0  # todo
@@ -98,7 +98,7 @@ class HyBaseAlgorithm(ABC):
         self.action_noise: Optional[ActionNoise] = None # 本项目没用到
         self.start_time = 0.0
         self.learning_rate = learning_rate
-        self.tensorboard_log = tensorboard_log
+        self.tensorboard_log = tensorboard_log # 使用tensorboard保存日志（包括配置日志存储日志路径），如果为None则使用自带的，示例："./logs/"  # 指定日志目录
         self._last_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] 存储上一帧的观察
         self._last_episode_starts = None  # type: Optional[np.ndarray] 存储
         # When using VecNormalize:
@@ -326,20 +326,50 @@ class HyBaseAlgorithm(ABC):
 
         return state_dicts, []
 
+
+    '''
+    # MaybeCallback 的实际定义
+    MaybeCallback = Optional[Union[Callable, BaseCallback, List[BaseCallback]]]
+
+    Optional：可以是 None
+        Union：可以是以下三种类型之一：
+        Callable：可调用对象（函数）
+        BaseCallback：回调基类的实例
+        List[BaseCallback]：回调对象列表
+
+    Callback 是在训练过程中特定时间点自动调用的钩子函数，用于：
+
+        📊 记录日志：保存额外的指标到 TensorBoard
+        💾 保存检查点：定期保存模型
+        ⏹️ 提前停止：达到目标性能后停止训练
+        📈 监控训练：实时查看训练状态
+        🔄 自定义逻辑：在训练循环中插入自定义代码
+
+    
+    '''
     def _init_callback(
         self,
         callback: MaybeCallback,
         progress_bar: bool = False,
     ) -> BaseCallback:
+        '''
+        callback: todo 回掉方法，主要是干什么的？ 格式是什么样子的？这里可以传入普通的回掉函数，也可以是sb3格式的自定义回掉函数/还可以是sb3内置的回掉函数
+        progress_bar: 是否开启进度显示
+        '''
         if isinstance(callback, list):
+            # 看来传入的回掉方法可以是list
             callback = CallbackList(callback)
 
         if not isinstance(callback, BaseCallback):
+            # 由于不是sb3支持的回掉格式，比如只是一个简单的回掉函数
+            # 那么这里就是将其转换为sb3支持的回掉格式
             callback = ConvertCallback(callback)
 
         if progress_bar:
+            # 给回掉方法传入进度
             callback = CallbackList([callback, ProgressBarCallback()])
 
+        # 初始化回掉
         callback.init_callback(self)
         return callback
 
@@ -347,16 +377,20 @@ class HyBaseAlgorithm(ABC):
         self,
         total_timesteps: int,
         callback: MaybeCallback = None,
-        reset_num_timesteps: bool = True,
-        tb_log_name: str = "run",
+        reset_num_timesteps: bool = True, 
+        tb_log_name: str = "run", # tb_log_name - TensorBoard 日志名称，指定 TensorBoard 日志的子目录名称前缀，实际目录名会在后面加上递增的数字：{tb_log_name}_{number}
         progress_bar: bool = False,
     ) -> Tuple[int, BaseCallback]:
         '''
-        total_timesteps: todo
+        total_timesteps: 记录训练的总步数，如果是新训练则从0开始，如果是恢复训练则从上一次结束的时候开始
         callback: todo
-        reset_num_timesteps: 这个有点像是否重置缓冲区的作用
+        reset_num_timesteps: 是否重置时间步计数
+            True：重置计数器，从0开始（默认，用于新训练）
+            False：继续之前的计数（用于恢复训练）
         tf_log_name: todo
         progress_bar: todo
+
+        return: 返回目前训练的总步数、配置好的sb3回掉方法实例（因为有可能传入的只是一个函数）
         '''
         self.start_time = time.time_ns()
 
@@ -385,10 +419,22 @@ class HyBaseAlgorithm(ABC):
             assert self.env is not None
             self._last_obs = self.env.reset()  # type: ignore[assignment] 记录最近的一帧
             self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool) # 记录开启状态标识
+            # 如果使用了向量包装器
+            # VecNormalize 是 Stable-Baselines3 提供的观察值归一化包装器，用于自动标准化环境的观察和奖励
+            '''
+            # VecNormalize 做什么：
+            # 1. 跟踪观察值的运行统计（均值和方差）
+            # 2. 将观察值归一化为均值0、方差1
+            # 3. 可选地归一化奖励
+            # 4. 保存归一化的统计信息以便后续使用
+            '''
             if self._vec_normalize_env is not None:
+                # 如果使用了归一化的包装器，这里调用获取原始观察值的方法
                 self._last_original_obs = self._vec_normalize_env.get_original_obs()
 
         if not self._custom_logger:
+            # 如果有自定义日志操作则不进行配置，如果没有则使用sb3的日志配置
+            # configure_logger的参数
             self._logger = utils.configure_logger(self.verbose, self.tensorboard_log, tb_log_name, reset_num_timesteps)
 
         callback = self._init_callback(callback, progress_bar)

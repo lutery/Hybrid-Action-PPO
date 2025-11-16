@@ -58,7 +58,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             supported_action_spaces=supported_action_spaces,
         )
 
-        self.n_steps = n_steps
+        self.n_steps = n_steps # 每次收集样本的步数
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.ent_coef_con = ent_coef_con
@@ -98,23 +98,36 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
         rollout_buffer: HYRolloutBuffer,
         n_rollout_steps: int,
     ) -> bool:
+        ''' 
+        env: 观察环境，这里看起来是强制设置了向量环境
+        callBack: 回掉方法
+        rollout_buffer: 缓冲区
+        n_rollout_steps: 采集的步数
+        '''
+
+        # 在收集时将模型策略设置为验证模式
         assert self._last_obs is not None, "No previous observation was provided"
         self.policy.set_training_mode(False)
 
         n_steps = 0
-        rollout_buffer.reset()
+        rollout_buffer.reset() # 重制缓冲区
         if self.use_sde:
+            # 如果使用了动作连续噪音，则在这里先重制噪音的参数
             self.policy.reset_noise(env.num_envs)
 
+        # 通知回掉开始收集数据
         callback.on_rollout_start()
 
+        # 没有到限制的最大步数，则一直进行数据收集
         while n_steps < n_rollout_steps:
+            # 如果使用了动作连续噪音，并且达到了采样频率，则重制噪音参数
+            # todo self.sde_sample_freq 的实际值，难道限制最大的游戏步数
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
+                # Sample a new noise matrix 重制噪音的参数
                 self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
-                # Convert to pytorch tensor or to TensorDict
+                # Convert to pytorch tensor or to TensorDict 将观察转换为tensor
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 #actions_disc, actions_con, values, log_prob_disc, log_prob_con
                 actions_disc, actions_con, values, log_probs_disc, log_prob_con = self.policy(obs_tensor)
@@ -204,6 +217,17 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ) -> SelfHyOnPolicyAlgorithm:
+        '''
+        SelfHyOnPolicyAlgorithm:
+        total_timesteps: 训练的总步数
+        callback: 训练过程中的回掉函数
+        log_interval: 日志打印间隔
+        tb_log_name:
+        reset_num_timesteps:
+        progress_bar:
+
+        '''
+
         iteration = 0
 
         total_timesteps, callback = self._setup_learn(
@@ -214,11 +238,13 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             progress_bar,
         )
 
+        # 这行代码是在训练开始时调用回调的初始化钩子，并将当前的本地变量和全局变量传递给回调对象。
         callback.on_training_start(locals(), globals())
 
         assert self.env is not None
 
         while self.num_timesteps < total_timesteps:
+            # 收集一批rollout数据
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
             if continue_training is False:

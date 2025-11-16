@@ -102,8 +102,10 @@ class HyBaseModel(nn.Module):
          :param features_extractor: The features extractor to use.
          :return: The extracted features
         """
+        # self.observation_space这里应该是告诉sb3环境的观察的shape，方便给obs进行预处理
+        # normalize_images：表示是否归一化的观察
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
-        return features_extractor(preprocessed_obs)
+        return features_extractor(preprocessed_obs) # 使用公共的特征提取，采集公共的观察特征
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         """
@@ -236,7 +238,7 @@ class HyBaseModel(nn.Module):
         return observation, vectorized_env
 
 class HyBasePolicy(HyBaseModel, ABC):
-    features_extractor: BaseFeaturesExtractor
+    features_extractor: BaseFeaturesExtractor # sb3的公共特征提取类
     def __init__(self, *args, squash_output: bool = False, **kwargs):
         '''
         这边的主要作用就是提取动作空间中的离散和连续部分
@@ -518,6 +520,12 @@ class HyActorCriticPolicy(HyBasePolicy):
         self.con_optimizer = self.optimizer_class(self.con_parameters, lr=lr_schedule(1), **self.optimizer_kwargs)
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        '''
+        obs: 观察
+        deterministic： todo 这个参数的含义
+        '''
+        
+        #提取环境的特征
         features = self.extract_features(obs)
         
         latent_pi_disc, latent_pi_con, latent_vf = self.mlp_extractor(features)
