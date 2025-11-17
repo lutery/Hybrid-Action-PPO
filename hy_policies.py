@@ -616,6 +616,7 @@ class HyActorCriticCnnPolicy(HyActorCriticPolicy):
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
     ):
+        # todo 这里cnn没有特殊的自定义是如何实现cnn卷积的？
         super().__init__(
             observation_space,
             action_space,
