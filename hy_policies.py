@@ -528,6 +528,7 @@ class HyActorCriticPolicy(HyBasePolicy):
         #提取环境的特征
         features = self.extract_features(obs)
         
+        # 对提取的特征分别得到离散动作的嵌入、连续动作的嵌入、价值预测的嵌入，每个嵌入都是独立的预测网络，互补相关
         latent_pi_disc, latent_pi_con, latent_vf = self.mlp_extractor(features)
         values = self.value_net(latent_vf)
         
