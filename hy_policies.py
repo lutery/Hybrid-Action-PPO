@@ -470,6 +470,8 @@ class HyActorCriticPolicy(HyBasePolicy):
         latent_dim_pi = self.mlp_extractor.latent_dim_pi # 获取动作网络最后一层的嵌入维度
 
         # todo 创建动作的分布对象的网络部分 看起来是可以用于动作采样预测
+        # # 这是一个 nn.Linear 层，输入维度为 latent_dim_pi，输出维度为离散动作数量
+        # self.action_net_disc 实际上是一个 nn.Linear 线性层，由 CategoricalDistribution.proba_distribution_net() 创建
         self.action_net_disc = self.action_dist_disc.proba_distribution_net(latent_dim=latent_dim_pi)
         self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
             latent_dim=latent_dim_pi, log_std_init=self.log_std_init
@@ -530,11 +532,15 @@ class HyActorCriticPolicy(HyBasePolicy):
         
         # 对提取的特征分别得到离散动作的嵌入、连续动作的嵌入、价值预测的嵌入，每个嵌入都是独立的预测网络，互补相关
         latent_pi_disc, latent_pi_con, latent_vf = self.mlp_extractor(features)
+        # 预测价值Q值
         values = self.value_net(latent_vf)
         
+        # 创建一个离散动作的分布采样对象
         distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
-        actions_disc = distribution_disc.get_actions(deterministic=deterministic)
-        log_prob_disc = distribution_disc.log_prob(actions_disc)
+        # 负责从离散动作分布中采样动作并计算对数概率
+        # deterministic是决定采样的动作是选择最大概率的动作True（验证）还是随机采样False（探索）
+        actions_disc = distribution_disc.get_actions(deterministic=deterministic) # action_disc应该返回的就是具体动作的索引
+        log_prob_disc = distribution_disc.log_prob(actions_disc) # 
 
         distribution_con = self._get_action_dist_from_latent_con(latent_pi_con)
         actions_con = distribution_con.get_actions(deterministic=deterministic)
@@ -548,7 +554,19 @@ class HyActorCriticPolicy(HyBasePolicy):
         return super().extract_features(obs, self.features_extractor)
 
     def _get_action_dist_from_latent_disc(self, latent_pi: th.Tensor) -> Distribution:
+        '''
+        param self_pi： 离散动作的嵌入预测
+        '''
+        # 将离散动作的嵌入向量转换为动作的 logits（对数几率），用于后续创建 Categorical 分布并采样离散动作
         mean_actions = self.action_net_disc(latent_pi)
+        # 这行代码是将 logits 转换为 Categorical 分布对象，使得我们可以从该分布中采样动作、计算概率等操作。
+        '''
+        self.distribution.sample()       # 采样动作
+        self.distribution.log_prob(a)    # 计算动作 a 的对数概率
+        self.distribution.entropy()      # 计算分布的熵
+        self.distribution.probs          # 获取动作概率（自动 softmax）
+        self.distribution.logits         # 获取原始 logits
+        '''
         return self.action_dist_disc.proba_distribution(action_logits=mean_actions)
 
     def _get_action_dist_from_latent_con(self, latent_pi: th.Tensor) -> Distribution:

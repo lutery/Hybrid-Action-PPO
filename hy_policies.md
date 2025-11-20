@@ -1316,3 +1316,903 @@ for name, param in model_random.policy.named_parameters():
 
 ### 与 Stable-Baselines3 一致
 本项目的正交初始化策略**完全遵循 SB3 的设计**，这是 PPO 算法在实践中表现优异的关键因素之一！🎯
+
+
+# `self.action_net_disc(latent_pi)` 详解
+
+## 一、核心作用
+
+`mean_actions = self.action_net_disc(latent_pi)` 这行代码是**将离散动作的嵌入向量转换为动作的 logits（对数几率）**，用于后续创建 Categorical 分布并采样离散动作。
+
+## 二、`self.action_net_disc` 是什么？
+
+### 1. 创建位置
+
+在 `hy_policies.py:473` 的 `_build` 方法中创建：
+
+````python
+def _build(self, lr_schedule: Schedule) -> None:
+    self._build_mlp_extractor()
+    latent_dim_pi = self.mlp_extractor.latent_dim_pi  # 获取策略网络最后一层维度
+    
+    # ========== 创建离散动作输出层 ==========
+    self.action_net_disc = self.action_dist_disc.proba_distribution_net(
+        latent_dim=latent_dim_pi
+    )
+    # 这是一个 nn.Linear 层，输入维度为 latent_dim_pi，输出维度为离散动作数量
+````
+
+### 2. 网络类型
+
+`self.action_net_disc` 实际上是一个 **`nn.Linear` 线性层**，由 `CategoricalDistribution.proba_distribution_net()` 创建。
+
+查看 Stable-Baselines3 源码（`stable_baselines3/common/distributions.py:274-276`）：
+
+````python
+class CategoricalDistribution(Distribution):
+    def proba_distribution_net(self, latent_dim: int) -> nn.Module:
+        """
+        创建表示分布的层：
+        它将是 Categorical 分布的 logits
+        然后可以使用 softmax 获得概率
+        
+        :param latent_dim: 策略网络最后一层的维度（动作层之前）
+        :return: Linear 层
+        """
+        action_logits = nn.Linear(latent_dim, self.action_dim)
+        return action_logits
+````
+
+### 3. 网络结构
+
+````python
+# 假设：
+# - latent_dim_pi = 64（三头网络策略分支的输出维度）
+# - action_space_disc = spaces.Discrete(5)（5个离散动作）
+
+self.action_net_disc = nn.Linear(64, 5)
+
+# 网络结构：
+# 输入: [batch_size, 64]
+# 输出: [batch_size, 5]  ← 每个动作的 logit 值
+````
+
+## 三、完整的数据流
+
+### 1. 从观察到离散动作的完整流程
+
+````python
+观察 (obs)
+    ↓
+[特征提取器] self.features_extractor
+    ↓
+特征向量 (features) [batch, features_dim]
+    ↓
+[三头网络 - 离散动作分支] mlp_extractor.forward_actor_disc()
+    ↓
+离散动作嵌入 (latent_pi) [batch, latent_dim_pi]
+    ↓
+[离散动作输出层] self.action_net_disc ← 这里！
+    ↓
+动作 logits (mean_actions) [batch, n_actions]
+    ↓
+[Categorical 分布] proba_distribution()
+    ↓
+采样离散动作 [batch, 1]
+````
+
+### 2. 在代码中的位置
+
+查看 `hy_policies.py:550-557`：
+
+````python
+def _get_action_dist_from_latent_disc(self, latent_pi: th.Tensor) -> Distribution:
+    """
+    从离散动作的嵌入向量创建动作分布
+    
+    参数:
+        latent_pi: 离散动作的嵌入预测 [batch_size, latent_dim_pi]
+    
+    返回:
+        CategoricalDistribution 实例
+    """
+    # ========== 关键步骤：线性变换 ==========
+    mean_actions = self.action_net_disc(latent_pi)
+    # 输入: [batch_size, 64]
+    # 输出: [batch_size, 5]  ← 5个动作的 logits
+    
+    # ========== 创建 Categorical 分布 ==========
+    return self.action_dist_disc.proba_distribution(action_logits=mean_actions)
+    # 内部会创建 Categorical(logits=mean_actions)
+````
+
+## 四、预测结果是什么？
+
+### 1. 输出格式
+
+````python
+# 假设 batch_size=2, n_actions=5
+
+latent_pi = torch.randn(2, 64)  # 输入的嵌入向量
+mean_actions = self.action_net_disc(latent_pi)
+
+# mean_actions 的形状: [2, 5]
+# 示例输出：
+tensor([
+    [ 0.3,  1.2, -0.5,  0.8, -0.2],  # 第1个样本的5个动作 logits
+    [-0.4,  0.6,  1.5, -0.1,  0.3]   # 第2个样本的5个动作 logits
+])
+````
+
+### 2. 语义解释
+
+**`mean_actions` 是未归一化的动作 logits**：
+
+- **不是概率**：值可以是任意实数（正数或负数）
+- **相对大小决定概率**：logit 值越大，对应动作被选中的概率越高
+- **需要 softmax 转换为概率**：
+  ````python
+  probabilities = torch.softmax(mean_actions, dim=-1)
+  # 结果：
+  tensor([
+      [0.15, 0.35, 0.06, 0.24, 0.20],  # 概率和为1
+      [0.08, 0.22, 0.54, 0.11, 0.05]
+  ])
+  ````
+
+### 3. 为什么叫 `mean_actions`？
+
+**名称来源于与连续动作的对应**：
+
+在连续动作中：
+````python
+# 连续动作输出的是高斯分布的均值
+mean_actions_con = self.action_net_con(latent_pi_con)  # 均值 μ
+log_std = self.log_std                                 # 标准差 σ
+
+# 创建高斯分布 N(μ, σ)
+distribution = DiagGaussianDistribution(mean_actions_con, log_std)
+````
+
+在离散动作中：
+````python
+# 虽然叫 mean_actions，但实际是 logits
+mean_actions_disc = self.action_net_disc(latent_pi_disc)
+
+# 创建 Categorical 分布
+distribution = CategoricalDistribution(logits=mean_actions_disc)
+````
+
+**命名约定**：为了保持代码风格一致，Stable-Baselines3 统一使用 `mean_actions` 这个变量名，即使对于离散动作它实际上是 logits。
+
+## 五、实际使用示例
+
+### 示例 1：训练时评估动作
+
+查看 `hy_policies.py:575-578`：
+
+````python
+def evaluate_actions(self, obs, actions_disc, actions_con):
+    features = self.extract_features(obs)
+    
+    # ========== 获取离散动作的嵌入 ==========
+    detached_f = features.detach()
+    latent_pi_disc = self.mlp_extractor.forward_actor_disc(detached_f)
+    
+    # ========== 通过 action_net_disc 获取 logits ==========
+    # 在 _get_action_dist_from_latent_disc 内部调用
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    
+    # ========== 计算已采样动作的对数概率 ==========
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    
+    # ========== 计算熵（用于熵正则化）==========
+    entropy_disc = distribution_disc.entropy()
+    
+    return values, log_prob_disc, log_prob_con, entropy_disc, entropy_con
+````
+
+### 示例 2：推理时采样动作
+
+````python
+def forward(self, obs, deterministic=False):
+    features = self.extract_features(obs)
+    latent_pi_disc, latent_pi_con, latent_vf = self.mlp_extractor(features)
+    
+    # ========== 获取离散动作分布 ==========
+    # 内部调用 self.action_net_disc(latent_pi_disc)
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    
+    # ========== 采样离散动作 ==========
+    if deterministic:
+        # 选择概率最高的动作（argmax）
+        actions_disc = distribution_disc.mode()
+    else:
+        # 根据概率分布采样
+        actions_disc = distribution_disc.sample()
+    
+    # ========== 计算对数概率（用于 PPO 损失）==========
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    
+    return actions_disc, actions_con, values, log_prob_disc, log_prob_con
+````
+
+## 六、与连续动作的对比
+
+| 特性 | 离散动作 (`action_net_disc`) | 连续动作 (`action_net_con`) |
+|------|----------------------------|---------------------------|
+| **网络类型** | `nn.Linear(latent_dim, n_actions)` | `nn.Linear(latent_dim, action_dim)` |
+| **输出含义** | 每个动作的 logits | 高斯分布的均值 μ |
+| **输出范围** | 任意实数 (-∞, +∞) | 任意实数 (-∞, +∞) |
+| **分布类型** | Categorical（分类分布） | DiagGaussian（对角高斯分布） |
+| **额外参数** | 无 | `log_std`（标准差的对数） |
+| **采样方式** | `torch.multinomial()` | `μ + σ * ε`，其中 ε ~ N(0,1) |
+| **动作后处理** | 无需处理（整数索引） | 裁剪到 `[low, high]` |
+
+### 对比代码
+
+````python
+# ========== 离散动作 ==========
+latent_pi_disc = mlp_extractor.forward_actor_disc(features)  # [batch, 64]
+logits = self.action_net_disc(latent_pi_disc)                # [batch, 5] logits
+distribution_disc = Categorical(logits=logits)               # 分类分布
+action_disc = distribution_disc.sample()                     # [batch] 整数 0-4
+
+# ========== 连续动作 ==========
+latent_pi_con = mlp_extractor.forward_actor_con(features)    # [batch, 64]
+mean = self.action_net_con(latent_pi_con)                    # [batch, 3] 均值
+std = torch.exp(self.log_std)                                # [3] 标准差
+distribution_con = Normal(mean, std)                         # 高斯分布
+action_con = distribution_con.sample()                       # [batch, 3] 实数
+action_con = torch.clamp(action_con, low, high)              # 裁剪到范围
+````
+
+## 七、数学原理
+
+### 1. Softmax 和 Categorical 分布
+
+````python
+# 给定 logits: z = [z_1, z_2, ..., z_n]
+
+# Softmax 转换为概率
+p_i = exp(z_i) / Σ_j exp(z_j)
+
+# 采样动作
+a ~ Categorical(p)
+
+# 示例：
+z = [0.3, 1.2, -0.5, 0.8, -0.2]
+
+p = softmax(z) = [0.15, 0.35, 0.06, 0.24, 0.20]
+
+# 采样时：
+# - 动作 1 被选中概率 35%
+# - 动作 0 被选中概率 15%
+# - 动作 2 被选中概率 6%
+````
+
+### 2. 对数概率的计算
+
+````python
+# 已采样动作 a = 1（第2个动作）
+
+log_prob = log(p[a]) = log(0.35) = -1.05
+
+# 在 PyTorch 中：
+log_prob = distribution.log_prob(action)
+# 内部实现：log_prob = log_softmax(logits)[action]
+````
+
+### 3. 熵的计算（探索度量）
+
+````python
+# 熵定义：H(p) = -Σ p_i * log(p_i)
+
+# 高熵 → 分布均匀 → 高探索
+# 低熵 → 分布集中 → 低探索
+
+# 示例：
+p1 = [0.5, 0.5]           # H = 0.69（高熵）
+p2 = [0.9, 0.1]           # H = 0.33（低熵）
+p3 = [0.99, 0.01]         # H = 0.06（极低熵）
+
+# 在训练中用于鼓励探索：
+loss = policy_loss - ent_coef_disc * entropy
+````
+
+## 八、调试技巧
+
+### 1. 打印 logits 和概率
+
+````python
+def _get_action_dist_from_latent_disc(self, latent_pi):
+    mean_actions = self.action_net_disc(latent_pi)
+    
+    # ========== 调试信息 ==========
+    print(f"Logits shape: {mean_actions.shape}")
+    print(f"Logits: {mean_actions[0]}")  # 打印第一个样本
+    
+    probs = torch.softmax(mean_actions, dim=-1)
+    print(f"Probabilities: {probs[0]}")
+    print(f"Prob sum: {probs[0].sum()}")  # 应该是 1.0
+    
+    return self.action_dist_disc.proba_distribution(action_logits=mean_actions)
+````
+
+### 2. 检查网络参数
+
+````python
+# 查看 action_net_disc 的权重
+print("Action net disc weights:")
+print(self.action_net_disc.weight.shape)  # [n_actions, latent_dim_pi]
+print(self.action_net_disc.bias.shape)    # [n_actions]
+
+# 检查是否正确初始化
+print(f"Weight mean: {self.action_net_disc.weight.mean():.4f}")
+print(f"Weight std: {self.action_net_disc.weight.std():.4f}")
+````
+
+### 3. 验证梯度流
+
+````python
+# 确保梯度正确传播
+mean_actions = self.action_net_disc(latent_pi)
+print(f"Requires grad: {mean_actions.requires_grad}")  # 应该是 True
+
+loss = -distribution.log_prob(actions).mean()
+loss.backward()
+
+# 检查梯度
+print(f"Grad norm: {self.action_net_disc.weight.grad.norm():.4f}")
+````
+
+## 九、常见错误
+
+### ❌ 错误 1：将 logits 当作概率
+
+````python
+# ❌ 错误
+logits = self.action_net_disc(latent_pi)
+action = torch.argmax(logits, dim=-1)  # 这是可以的
+prob = logits[action]                  # ❌ logits 不是概率！
+
+# ✅ 正确
+distribution = self._get_action_dist_from_latent_disc(latent_pi)
+action = distribution.sample()
+log_prob = distribution.log_prob(action)  # 正确获取对数概率
+````
+
+### ❌ 错误 2：输出维度不匹配
+
+````python
+# ❌ 错误：latent_dim_pi 与实际不匹配
+self.action_net_disc = nn.Linear(64, n_actions)
+# 但实际 latent_pi 的维度是 128
+
+# ✅ 正确：使用 mlp_extractor 的输出维度
+latent_dim_pi = self.mlp_extractor.latent_dim_pi
+self.action_net_disc = nn.Linear(latent_dim_pi, n_actions)
+````
+
+### ❌ 错误 3：忘记创建分布
+
+````python
+# ❌ 错误：直接使用 logits
+logits = self.action_net_disc(latent_pi)
+action = torch.multinomial(logits, 1)  # ❌ logits 不是概率！
+
+# ✅ 正确：通过分布采样
+distribution = CategoricalDistribution(logits=logits)
+action = distribution.sample()
+````
+
+## 十、总结
+
+1. **`self.action_net_disc`** 是一个 `nn.Linear` 层，将嵌入向量映射到动作 logits
+2. **输入**：离散动作嵌入 `[batch, latent_dim_pi]`
+3. **输出**：动作 logits `[batch, n_actions]`（未归一化的分数）
+4. **作用**：为 Categorical 分布提供参数，用于采样离散动作
+5. **与连续动作的区别**：
+   - 离散：输出 logits → Categorical 分布
+   - 连续：输出均值 μ + 标准差 σ → Gaussian 分布
+6. **在训练中的角色**：
+   - 前向传播：生成 logits → 采样动作
+   - 损失计算：计算 log_prob 和 entropy
+   - 反向传播：更新 `action_net_disc` 的参数以优化策略
+
+理解 `self.action_net_disc` 是理解整个混合动作空间 PPO 算法的关键环节，它连接了策略网络和动作分布，使得智能体能够根据观察选择合适的离散动作。
+
+# [`self.action_dist_disc.proba_distribution(action_logits=mean_actions)`](hy_policies.py ) 详解
+
+## 一、核心作用
+
+这行代码是**将 logits 转换为 Categorical 分布对象**，使得我们可以从该分布中采样动作、计算概率等操作。
+
+## 二、完整的调用链路
+
+### 1. 在代码中的位置
+
+查看 [`hy_policies.py:557-559`](hy_policies.py ):
+
+````python
+def _get_action_dist_from_latent_disc(self, latent_pi: th.Tensor) -> Distribution:
+    # 步骤1: 通过线性层获取 logits
+    mean_actions = self.action_net_disc(latent_pi)  # [batch, n_actions]
+    
+    # 步骤2: 创建 Categorical 分布 ← 这里！
+    return self.action_dist_disc.proba_distribution(action_logits=mean_actions)
+````
+
+### 2. [`self.action_dist_disc`](hy_policies.py ) 是什么？
+
+在 [`hy_policies.py:425`](hy_policies.py ) 中创建：
+
+````python
+# action_dist_disc 是 CategoricalDistribution 的实例
+self.action_dist_disc = make_proba_distribution(
+    self.action_space_disc,  # spaces.Discrete(n)
+    dist_kwargs=None
+)
+# 返回: CategoricalDistribution(action_dim=n)
+````
+
+**类型**：[`CategoricalDistribution`]distributions.py ) 实例
+
+**作用**：作为**分布工厂**，用于创建具体的 PyTorch Categorical 分布对象
+
+## 三、[`proba_distribution()`]distributions.py ) 方法详解
+
+### 1. 方法签名
+
+查看 Stable-Baselines3 源码 [`distributions.py:287-289`]distributions.py ):
+
+````python
+class CategoricalDistribution(Distribution):
+    def proba_distribution(
+        self: SelfCategoricalDistribution, 
+        action_logits: th.Tensor
+    ) -> SelfCategoricalDistribution:
+        """
+        根据 logits 创建 PyTorch Categorical 分布
+        
+        参数:
+            action_logits: 未归一化的动作 logits [batch_size, n_actions]
+        
+        返回:
+            self: 返回自身（链式调用模式）
+        """
+        # 创建 PyTorch 的 Categorical 分布
+        self.distribution = Categorical(logits=action_logits)
+        return self
+````
+
+### 2. 内部实现
+
+````python
+# PyTorch 的 Categorical 构造函数
+from torch.distributions import Categorical
+
+# 传入 logits（未归一化的分数）
+distribution = Categorical(logits=action_logits)
+
+# 内部会自动进行 softmax 转换：
+# probs = softmax(logits)
+# 但不会显式存储 probs，而是在需要时计算
+````
+
+### 3. 返回的分布对象
+
+返回的 [`CategoricalDistribution`]distributions.py ) 实例包含一个 PyTorch [`Categorical`](/c:/Users/frees/AppData/Roaming/Python/Python310/site-packages/torch/distributions/categorical.py ) 对象：
+
+````python
+# 分布对象的内部状态
+self.distribution = Categorical(logits=[...])
+
+# 可用的方法：
+self.distribution.sample()       # 采样动作
+self.distribution.log_prob(a)    # 计算动作 a 的对数概率
+self.distribution.entropy()      # 计算分布的熵
+self.distribution.probs          # 获取动作概率（自动 softmax）
+self.distribution.logits         # 获取原始 logits
+````
+
+## 四、完整的数据流示例
+
+### 示例场景
+
+假设我们有：
+- **batch_size = 2**（2个环境并行）
+- **n_actions = 5**（5个离散动作可选）
+
+### 步骤 1：输入 logits
+
+````python
+# 从 action_net_disc 获得的 logits
+mean_actions = torch.tensor([
+    [ 0.3,  1.2, -0.5,  0.8, -0.2],  # 环境1的5个动作 logits
+    [-0.4,  0.6,  1.5, -0.1,  0.3]   # 环境2的5个动作 logits
+])
+# 形状: [2, 5]
+````
+
+**logits 的含义**：
+- 动作1（索引1）的 logit=1.2（最大）→ 概率最高
+- 动作2（索引2）的 logit=-0.5（最小）→ 概率最低
+
+### 步骤 2：调用 `proba_distribution()`
+
+````python
+# 调用
+distribution = self.action_dist_disc.proba_distribution(
+    action_logits=mean_actions
+)
+
+# 等价于内部执行：
+from torch.distributions import Categorical
+distribution.distribution = Categorical(logits=mean_actions)
+````
+
+### 步骤 3：分布对象的内部状态
+
+````python
+# PyTorch Categorical 会自动计算概率（lazy evaluation）
+print(distribution.distribution.probs)
+# 输出（经过 softmax）：
+tensor([
+    [0.15, 0.35, 0.06, 0.24, 0.20],  # 环境1的动作概率，总和=1
+    [0.08, 0.22, 0.54, 0.11, 0.05]   # 环境2的动作概率，总和=1
+])
+````
+
+**softmax 计算过程**：
+````python
+import torch.nn.functional as F
+
+probs = F.softmax(mean_actions, dim=-1)
+# 对每一行独立进行 softmax
+# probs[i, j] = exp(logits[i, j]) / sum(exp(logits[i, :]))
+````
+
+## 五、分布对象的使用
+
+### 1. 采样动作
+
+````python
+# 训练时：随机采样（探索）
+actions = distribution.sample()
+# 输出: tensor([1, 2])  # 环境1选择动作1，环境2选择动作2
+
+# 推理时：选择概率最大的动作（利用）
+actions = distribution.mode()
+# 等价于: torch.argmax(distribution.probs, dim=-1)
+# 输出: tensor([1, 2])  # 选择每行概率最大的动作索引
+````
+
+### 2. 计算对数概率
+
+````python
+# 已采样的动作
+actions = torch.tensor([1, 2])  # 环境1选动作1，环境2选动作2
+
+# 计算这些动作的对数概率
+log_probs = distribution.log_prob(actions)
+# 输出: tensor([-1.05, -0.62])
+
+# 计算细节：
+# log_probs[0] = log(probs[0, 1]) = log(0.35) ≈ -1.05
+# log_probs[1] = log(probs[1, 2]) = log(0.54) ≈ -0.62
+````
+
+### 3. 计算熵（探索度量）
+
+````python
+# 熵：H = -Σ p_i * log(p_i)
+entropy = distribution.entropy()
+# 输出: tensor([1.52, 1.35])
+
+# 熵的含义：
+# - 高熵（如1.6）：分布均匀，探索性强
+# - 低熵（如0.5）：分布集中，确定性强
+````
+
+## 六、在训练中的完整使用
+
+### 场景 1：前向传播（采样动作）
+
+查看 [`hy_policies.py:541-545`](hy_policies.py ):
+
+````python
+def forward(self, obs, deterministic=False):
+    # ...省略特征提取...
+    latent_pi_disc = mlp_extractor.forward_actor_disc(features)
+    
+    # ========== 创建分布 ==========
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    # 内部调用: self.action_dist_disc.proba_distribution(logits)
+    
+    # ========== 采样动作 ==========
+    actions_disc = distribution_disc.get_actions(deterministic=deterministic)
+    # 如果 deterministic=True: 使用 mode()（argmax）
+    # 如果 deterministic=False: 使用 sample()（随机）
+    
+    # ========== 计算对数概率 ==========
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    
+    return actions_disc, actions_con, values, log_prob_disc, log_prob_con
+````
+
+### 场景 2：评估动作（计算损失）
+
+查看 [`hy_policies.py:576-581`](hy_policies.py ):
+
+````python
+def evaluate_actions(self, obs, actions_disc, actions_con):
+    # ...省略特征提取...
+    latent_pi_disc = self.mlp_extractor.forward_actor_disc(features.detach())
+    
+    # ========== 创建分布 ==========
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    
+    # ========== 计算已采样动作的对数概率 ==========
+    # 这些动作是从 rollout buffer 中读取的旧动作
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    
+    # ========== 计算熵（用于熵正则化）==========
+    entropy_disc = distribution_disc.entropy()
+    
+    return values, log_prob_disc, log_prob_con, entropy_disc, entropy_con
+````
+
+## 七、与 PPO 损失计算的关系
+
+### 1. 重要性采样比率
+
+在 PPO 训练中（[`hy_ppo.py:162-165`](hy_ppo.py )）：
+
+````python
+# ========== 计算新的对数概率 ==========
+# 使用当前策略重新评估 buffer 中的旧动作
+values, log_prob_disc, log_prob_con, entropy_disc, entropy_con = \
+    self.policy.evaluate_actions(rollout_data.observations, 
+                                  rollout_data.actions_disc, 
+                                  rollout_data.actions_con)
+
+# ========== 计算重要性采样比率 ==========
+ratio_disc = torch.exp(log_prob_disc - rollout_data.old_log_probs_disc)
+# ratio = P_new(a) / P_old(a)
+#       = exp(log P_new(a) - log P_old(a))
+
+# 示例：
+# 如果 log_prob_new = -1.0, log_prob_old = -1.5
+# ratio = exp(-1.0 - (-1.5)) = exp(0.5) ≈ 1.65
+# 含义：新策略比旧策略更喜欢这个动作（概率提高了65%）
+````
+
+### 2. PPO 裁剪损失
+
+````python
+# ========== 优势函数 ==========
+advantages = rollout_data.advantages  # [batch_size]
+
+# ========== PPO 裁剪目标 ==========
+policy_loss_1 = advantages * ratio_disc
+policy_loss_2 = advantages * torch.clamp(
+    ratio_disc, 
+    1 - clip_range,  # 例如 0.8
+    1 + clip_range   # 例如 1.2
+)
+policy_loss_disc = -torch.min(policy_loss_1, policy_loss_2).mean()
+
+# 裁剪的作用：
+# - 如果 ratio > 1.2：裁剪为 1.2（防止策略更新过大）
+# - 如果 ratio < 0.8：裁剪为 0.8（防止策略崩溃）
+# - 如果 0.8 ≤ ratio ≤ 1.2：不裁剪
+````
+
+### 3. 熵正则化
+
+````python
+# ========== 鼓励探索 ==========
+entropy_loss = -entropy_disc.mean()
+
+# 总损失
+loss = policy_loss_disc + ent_coef_disc * entropy_loss
+
+# 熵系数的作用：
+# - ent_coef_disc = 0.01（标准设置）
+# - 高熵 → 低损失 → 鼓励探索
+# - 低熵 → 高损失 → 惩罚过度确定的策略
+````
+
+## 八、数学原理
+
+### 1. Softmax 和概率计算
+
+````python
+# 给定 logits: z = [z_1, z_2, ..., z_n]
+
+# Softmax 公式
+p_i = exp(z_i) / Σ_j exp(z_j)
+
+# 示例：
+z = [0.3, 1.2, -0.5, 0.8, -0.2]
+
+# 计算分母
+sum_exp = exp(0.3) + exp(1.2) + exp(-0.5) + exp(0.8) + exp(-0.2)
+        = 1.35 + 3.32 + 0.61 + 2.23 + 0.82
+        = 8.33
+
+# 计算各动作概率
+p_0 = exp(0.3) / 8.33 = 1.35 / 8.33 ≈ 0.162
+p_1 = exp(1.2) / 8.33 = 3.32 / 8.33 ≈ 0.399  ← 最大
+p_2 = exp(-0.5) / 8.33 = 0.61 / 8.33 ≈ 0.073  ← 最小
+p_3 = exp(0.8) / 8.33 = 2.23 / 8.33 ≈ 0.268
+p_4 = exp(-0.2) / 8.33 = 0.82 / 8.33 ≈ 0.098
+````
+
+### 2. 对数概率计算
+
+````python
+# 对数概率：log(p_i)
+log_prob = log(p_i) = log(exp(z_i) / Σ_j exp(z_j))
+         = z_i - log(Σ_j exp(z_j))
+         = z_i - log_sum_exp(z)
+
+# 这就是 log_softmax 的数学定义
+log_prob = F.log_softmax(logits, dim=-1)
+
+# 为什么使用对数概率？
+# 1. 数值稳定性：避免概率接近0时的下溢
+# 2. 计算效率：乘法变加法
+# 3. 梯度性质更好：避免梯度消失
+````
+
+### 3. 熵的计算
+
+````python
+# 离散分布的熵
+H(p) = -Σ p_i * log(p_i)
+
+# 示例：
+probs = [0.162, 0.399, 0.073, 0.268, 0.098]
+
+H = -(0.162*log(0.162) + 0.399*log(0.399) + 0.073*log(0.073) + 
+      0.268*log(0.268) + 0.098*log(0.098))
+  = -(0.162*(-1.82) + 0.399*(-0.92) + 0.073*(-2.62) + 
+      0.268*(-1.32) + 0.098*(-2.32))
+  ≈ 1.52
+
+# 熵的范围：
+# - 最小值 0：完全确定（某个动作概率=1）
+# - 最大值 log(n)：完全均匀（每个动作概率=1/n）
+# - 对于5个动作：H_max = log(5) ≈ 1.61
+````
+
+## 九、调试技巧
+
+### 1. 打印分布信息
+
+````python
+def _get_action_dist_from_latent_disc(self, latent_pi):
+    mean_actions = self.action_net_disc(latent_pi)
+    distribution = self.action_dist_disc.proba_distribution(
+        action_logits=mean_actions
+    )
+    
+    # ========== 调试输出 ==========
+    print("=== Discrete Action Distribution ===")
+    print(f"Logits: {mean_actions[0]}")
+    print(f"Probs: {distribution.distribution.probs[0]}")
+    print(f"Prob sum: {distribution.distribution.probs[0].sum()}")  # 应该=1
+    print(f"Entropy: {distribution.entropy()[0]}")
+    
+    return distribution
+````
+
+### 2. 验证概率和为1
+
+````python
+# 检查 softmax 是否正确
+probs = distribution.distribution.probs
+assert torch.allclose(probs.sum(dim=-1), torch.ones(probs.shape[0])), \
+    "Probabilities do not sum to 1!"
+````
+
+### 3. 检查梯度流
+
+````python
+# 确保 logits 有梯度
+mean_actions = self.action_net_disc(latent_pi)
+print(f"Logits requires grad: {mean_actions.requires_grad}")  # 应该是 True
+
+# 创建分布后，梯度应该保留
+distribution = self.action_dist_disc.proba_distribution(mean_actions)
+log_prob = distribution.log_prob(actions)
+print(f"Log prob requires grad: {log_prob.requires_grad}")  # 应该是 True
+````
+
+### 4. 可视化动作概率
+
+````python
+import matplotlib.pyplot as plt
+
+# 获取概率分布
+probs = distribution.distribution.probs[0].detach().cpu().numpy()
+
+# 绘制条形图
+plt.figure(figsize=(10, 6))
+plt.bar(range(len(probs)), probs)
+plt.xlabel('Action Index')
+plt.ylabel('Probability')
+plt.title('Discrete Action Probability Distribution')
+plt.ylim(0, 1)
+for i, p in enumerate(probs):
+    plt.text(i, p + 0.02, f'{p:.3f}', ha='center')
+plt.show()
+````
+
+## 十、常见错误
+
+### ❌ 错误 1：混淆 logits 和概率
+
+````python
+# ❌ 错误：直接将 logits 当作概率
+logits = self.action_net_disc(latent_pi)
+action = torch.multinomial(logits, 1)  # ❌ logits 不是概率！
+
+# ✅ 正确：通过分布对象采样
+distribution = self.action_dist_disc.proba_distribution(logits)
+action = distribution.sample()
+````
+
+### ❌ 错误 2：忘记 detach 特征
+
+````python
+# ❌ 错误：在计算策略损失时没有 detach 特征
+features = self.extract_features(obs)
+latent_pi = self.mlp_extractor.forward_actor_disc(features)
+# 这会导致策略梯度影响特征提取器（如果共享）
+
+# ✅ 正确：detach 特征，使策略和价值独立更新
+features = self.extract_features(obs)
+latent_pi = self.mlp_extractor.forward_actor_disc(features.detach())
+````
+
+### ❌ 错误 3：概率维度不匹配
+
+````python
+# ❌ 错误：actions 的形状不对
+actions = torch.tensor([[1], [2]])  # [batch, 1]
+log_prob = distribution.log_prob(actions)  # ❌ 维度错误
+
+# ✅ 正确：actions 应该是 [batch] 形状
+actions = torch.tensor([1, 2])  # [batch]
+log_prob = distribution.log_prob(actions)  # ✅ 正确
+````
+
+## 十一、总结
+
+### 核心流程
+
+````
+Logits (未归一化分数)
+    ↓
+proba_distribution(logits)  ← 关键步骤
+    ↓
+Categorical Distribution (概率分布对象)
+    ↓
+┌──────────┬──────────┬──────────┐
+│  sample() │ log_prob() │ entropy() │
+│  mode()  │  probs   │  logits  │
+└──────────┴──────────┴──────────┘
+````
+
+### 关键点
+
+1. **[`proba_distribution()`]distributions.py )** 是**工厂方法**，将 logits 包装成分布对象
+2. **内部创建 PyTorch [`Categorical`](/c:/Users/frees/AppData/Roaming/Python/Python310/site-packages/torch/distributions/categorical.py )**，自动处理 softmax
+3. **返回的分布对象**提供丰富的操作：采样、计算概率、计算熵等
+4. **在 PPO 中**：用于计算重要性采样比率和熵正则化
+5. **数值稳定**：使用 log_softmax 而不是直接计算概率
+
+理解 [`proba_distribution()`]distributions.py ) 是掌握强化学习策略梯度方法的关键，它连接了神经网络输出和概率分布，使得智能体能够进行随机策略选择和策略优化。
