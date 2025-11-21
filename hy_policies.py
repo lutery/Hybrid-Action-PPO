@@ -422,6 +422,15 @@ class HyActorCriticPolicy(HyBasePolicy):
         '''
         # 离散动作空间 -> CategoricalDistribution
         # 假设 action_space_disc = spaces.Discrete(5)
+        '''
+        对角高斯分布（Diagonal Gaussian Distribution）：
+
+        假设：各个动作维度相互独立
+        协方差矩阵：对角矩阵（非对角元素为0）
+        参数：
+        均值 μ：每个动作维度的均值
+        标准差 σ：每个动作维度的标准差（以对数形式 log_std 存储）
+        '''
         self.action_dist_disc = make_proba_distribution(self.action_space_disc, dist_kwargs=None) # 返回: CategoricalDistribution 实例
         
         # 连续动作空间 -> DiagGaussianDistribution
@@ -473,6 +482,24 @@ class HyActorCriticPolicy(HyBasePolicy):
         # # 这是一个 nn.Linear 层，输入维度为 latent_dim_pi，输出维度为离散动作数量
         # self.action_net_disc 实际上是一个 nn.Linear 线性层，由 CategoricalDistribution.proba_distribution_net() 创建
         self.action_net_disc = self.action_dist_disc.proba_distribution_net(latent_dim=latent_dim_pi)
+        # 创建连续动作的输出层和对数标准差参
+        '''
+        proba_distribution_net  参数说明
+        """
+        创建表示分布的层和参数：
+        - 一个输出层产生高斯分布的均值
+        - 另一个参数表示标准差（实际存储为对数形式，允许负值）
+        
+        参数:
+            latent_dim: 策略网络最后一层的维度（动作层之前）
+            log_std_init: 对数标准差的初始值
+        
+        返回:
+            (mean_actions, log_std): 元组
+                - mean_actions: nn.Linear 层，输出动作均值
+                - log_std: nn.Parameter，可学习的对数标准差
+        """
+        '''
         self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
             latent_dim=latent_dim_pi, log_std_init=self.log_std_init
         )
@@ -540,9 +567,11 @@ class HyActorCriticPolicy(HyBasePolicy):
         # 负责从离散动作分布中采样动作并计算对数概率
         # deterministic是决定采样的动作是选择最大概率的动作True（验证）还是随机采样False（探索）
         actions_disc = distribution_disc.get_actions(deterministic=deterministic) # action_disc应该返回的就是具体动作的索引
-        log_prob_disc = distribution_disc.log_prob(actions_disc) # 
+        log_prob_disc = distribution_disc.log_prob(actions_disc) # 计算给定动作的对数概率
 
+        # 创建一个连续动作的分布采样对象（利用均值和方差计算得到）
         distribution_con = self._get_action_dist_from_latent_con(latent_pi_con)
+        # 如果是True，则应该是直接返回均值，如果是false,那么可能是加入方差进行采样
         actions_con = distribution_con.get_actions(deterministic=deterministic)
         log_prob_con = distribution_con.log_prob(actions_con)
 
@@ -570,7 +599,11 @@ class HyActorCriticPolicy(HyBasePolicy):
         return self.action_dist_disc.proba_distribution(action_logits=mean_actions)
 
     def _get_action_dist_from_latent_con(self, latent_pi: th.Tensor) -> Distribution:
+        # 使用连续动作预测的均值头将连续动作的嵌入向量转换为动作的均值，用于后续创建高斯分布并采样连续动作
         mean_actions = self.action_net_con(latent_pi)
+        # 对于方差部分判断类型使用不同的方法
+        # self.log_std是一个可以学习的方差值
+        # 在proba_distribution内部会构造一个和均值一样的矩阵，然后和均值构建一个正太分布
         if isinstance(self.action_dist_con, DiagGaussianDistribution):
             return self.action_dist_con.proba_distribution(mean_actions, self.log_std)
         elif isinstance(self.action_dist_con, StateDependentNoiseDistribution):

@@ -2216,3 +2216,2614 @@ Categorical Distribution (概率分布对象)
 5. **数值稳定**：使用 log_softmax 而不是直接计算概率
 
 理解 [`proba_distribution()`]distributions.py ) 是掌握强化学习策略梯度方法的关键，它连接了神经网络输出和概率分布，使得智能体能够进行随机策略选择和策略优化。
+
+
+# 选中代码详解：`get_actions()` 和 `log_prob()` 方法
+
+## 一、代码位置与上下文
+
+选中的代码在 `hy_policies.py:540-541`：
+
+````python
+actions_disc = distribution_disc.get_actions(deterministic=deterministic)
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+````
+
+这两行代码是 `forward()` 方法的核心部分，负责**从离散动作分布中采样动作并计算对数概率**。
+
+## 二、完整的调用链路
+
+### 1. 整体流程
+
+````python
+观察 (obs)
+    ↓
+extract_features()  # 提取特征
+    ↓
+mlp_extractor()  # 三头网络
+    ↓
+latent_pi_disc  # 离散动作嵌入
+    ↓
+_get_action_dist_from_latent_disc()  # 创建分布
+    ↓
+distribution_disc  # Categorical 分布对象
+    ↓
+get_actions(deterministic)  ← 第一行：采样动作
+    ↓
+actions_disc  # 离散动作索引
+    ↓
+log_prob(actions_disc)  ← 第二行：计算对数概率
+    ↓
+log_prob_disc  # 对数概率值
+````
+
+### 2. 在 `forward()` 方法中的完整代码
+
+查看 `hy_policies.py:533-548`：
+
+````python
+def forward(self, obs: th.Tensor, deterministic: bool = False):
+    # ========== 步骤1：提取特征 ==========
+    features = self.extract_features(obs)
+    
+    # ========== 步骤2：三头网络前向传播 ==========
+    latent_pi_disc, latent_pi_con, latent_vf = self.mlp_extractor(features)
+    
+    # ========== 步骤3：预测价值 ==========
+    values = self.value_net(latent_vf)
+    
+    # ========== 步骤4：创建离散动作分布 ==========
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    
+    # ========== 步骤5：采样离散动作 ← 选中代码第1行 ==========
+    actions_disc = distribution_disc.get_actions(deterministic=deterministic)
+    
+    # ========== 步骤6：计算对数概率 ← 选中代码第2行 ==========
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    
+    # ... 连续动作的类似处理 ...
+    
+    return actions_disc, actions_con, values, log_prob_disc, log_prob_con
+````
+
+## 三、`get_actions()` 方法详解
+
+### 1. 方法定义
+
+来自 Stable-Baselines3 的 `Distribution` 基类（`distributions.py:80-91`）：
+
+````python
+def get_actions(self, deterministic: bool = False) -> th.Tensor:
+    """
+    根据概率分布返回动作
+    
+    参数:
+        deterministic: 是否使用确定性策略
+            - True: 返回概率最大的动作（mode）
+            - False: 根据概率分布随机采样（sample）
+    
+    返回:
+        动作张量
+    """
+    if deterministic:
+        return self.mode()  # 确定性：选择概率最大的动作
+    return self.sample()    # 随机：按概率分布采样
+````
+
+### 2. 两种采样模式
+
+#### 模式1：随机采样（`deterministic=False`）
+
+**训练时使用**，用于探索：
+
+````python
+# 调用
+actions_disc = distribution_disc.get_actions(deterministic=False)
+
+# 等价于
+actions_disc = distribution_disc.sample()
+
+# 内部实现（CategoricalDistribution）
+# distributions.py:297-298
+def sample(self) -> th.Tensor:
+    return self.distribution.sample()
+
+# PyTorch Categorical 的 sample() 方法
+# 根据概率分布随机采样
+````
+
+**示例**：
+
+````python
+# 假设概率分布为：
+probs = [0.1, 0.6, 0.2, 0.1]  # 4个动作
+
+# 随机采样10次，动作1被选中的概率约60%
+samples = []
+for _ in range(10):
+    action = distribution.sample()
+    samples.append(action.item())
+
+# 可能的结果：[1, 1, 2, 1, 0, 1, 1, 3, 1, 2]
+# 动作1出现约6次（符合60%概率）
+````
+
+#### 模式2：确定性选择（`deterministic=True`）
+
+**测试/部署时使用**，用于利用：
+
+````python
+# 调用
+actions_disc = distribution_disc.get_actions(deterministic=True)
+
+# 等价于
+actions_disc = distribution_disc.mode()
+
+# 内部实现（CategoricalDistribution）
+# distributions.py:300-301
+def mode(self) -> th.Tensor:
+    return th.argmax(self.distribution.probs, dim=1)
+
+# 选择概率最大的动作
+````
+
+**示例**：
+
+````python
+# 假设概率分布为：
+probs = [0.1, 0.6, 0.2, 0.1]  # 4个动作
+
+# 确定性选择，始终选择动作1（概率60%）
+action = distribution.mode()  # 返回 1
+
+# 无论调用多少次，结果都是 1
+for _ in range(10):
+    action = distribution.mode()
+    print(action)  # 输出: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+````
+
+### 3. 返回值格式
+
+````python
+# 输入：batch_size=2, n_actions=5
+latent_pi_disc = torch.randn(2, 64)
+
+# 创建分布
+distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+
+# 采样动作
+actions_disc = distribution_disc.get_actions(deterministic=False)
+
+# 输出形状：[batch_size] = [2]
+# 示例输出：tensor([3, 1])
+# 含义：环境0选择动作3，环境1选择动作1
+````
+
+## 四、`log_prob()` 方法详解
+
+### 1. 方法定义
+
+来自 `CategoricalDistribution` 类（`distributions.py:291-292`）：
+
+````python
+def log_prob(self, actions: th.Tensor) -> th.Tensor:
+    """
+    计算给定动作的对数概率
+    
+    参数:
+        actions: 动作索引 [batch_size]
+    
+    返回:
+        对数概率 [batch_size]
+    """
+    return self.distribution.log_prob(actions)
+    # 调用 PyTorch Categorical 的 log_prob 方法
+````
+
+### 2. 计算过程
+
+````python
+# 假设：
+probs = torch.tensor([
+    [0.1, 0.6, 0.2, 0.1],  # 环境0的动作概率
+    [0.3, 0.2, 0.4, 0.1]   # 环境1的动作概率
+])
+
+# 已采样的动作
+actions = torch.tensor([1, 2])  # 环境0选动作1，环境1选动作2
+
+# 计算对数概率
+log_probs = distribution.log_prob(actions)
+
+# 手动计算：
+# log_probs[0] = log(probs[0, 1]) = log(0.6) ≈ -0.51
+# log_probs[1] = log(probs[1, 2]) = log(0.4) ≈ -0.92
+
+# 输出：tensor([-0.51, -0.92])
+````
+
+### 3. 为什么使用对数概率？
+
+#### 原因1：数值稳定性
+
+````python
+# ❌ 直接使用概率（可能下溢）
+prob = 0.0001
+prob_product = prob * prob * prob  # 1e-12，接近0
+
+# ✅ 使用对数概率（更稳定）
+log_prob = log(0.0001)  # -9.21
+log_prob_sum = log_prob + log_prob + log_prob  # -27.63
+````
+
+#### 原因2：计算效率
+
+````python
+# 乘法变加法
+log(p1 * p2 * p3) = log(p1) + log(p2) + log(p3)
+
+# 在 PPO 损失中：
+ratio = exp(log_prob_new - log_prob_old)
+# 等价于但更高效：
+ratio = prob_new / prob_old
+````
+
+#### 原因3：梯度性质更好
+
+````python
+# 对数概率的梯度更平滑
+d/dx log(p) = 1/p * d/dx p
+
+# 避免概率接近0时的梯度爆炸
+````
+
+### 4. 在 PPO 中的使用
+
+查看 `hy_ppo.py:166-168`：
+
+````python
+# ========== 训练循环中 ==========
+# 重新评估 buffer 中的旧动作
+values, log_prob_disc, log_prob_con, entropy_disc, entropy_con = \
+    self.policy.evaluate_actions(
+        rollout_data.observations,
+        rollout_data.actions_disc,  # 从 buffer 读取的旧动作
+        rollout_data.actions_con
+    )
+
+# ========== 计算重要性采样比率 ==========
+ratio_disc = torch.exp(log_prob_disc - rollout_data.old_log_probs_disc)
+# ratio = P_new(a) / P_old(a)
+
+# ========== PPO 裁剪损失 ==========
+advantages = rollout_data.advantages
+policy_loss_1 = advantages * ratio_disc
+policy_loss_2 = advantages * torch.clamp(ratio_disc, 1 - clip_range, 1 + clip_range)
+policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+````
+
+## 五、两行代码的协同工作
+
+### 1. 为什么需要两步？
+
+````python
+# 步骤1：采样动作
+actions_disc = distribution_disc.get_actions(deterministic=False)
+# 作用：从分布中获取动作，用于与环境交互
+
+# 步骤2：计算对数概率
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+# 作用：记录采样动作的概率，用于后续的策略梯度计算
+````
+
+**为什么不能只采样不记录概率**？
+
+在 PPO 中，我们需要计算：
+````python
+ratio = P_new(a|s) / P_old(a|s)
+````
+因此必须在采样时就记录 `P_old(a|s)`（即 `log_prob_old`），存储到 buffer 中。
+
+### 2. 训练 vs 推理的区别
+
+#### 训练时（`collect_rollouts`）
+
+````python
+# hy_on_policy_algo.py 中
+with torch.no_grad():
+    # 使用当前策略采样动作（随机探索）
+    actions_disc, actions_con, values, log_probs_disc, log_probs_con = \
+        self.policy.forward(obs, deterministic=False)
+
+# 存储到 buffer（用于后续训练）
+self.rollout_buffer.add(
+    obs,
+    actions_disc,
+    actions_con,
+    rewards,
+    dones,
+    values,
+    log_probs_disc,  # ← 存储对数概率
+    log_probs_con
+)
+````
+
+#### 推理时（`predict`）
+
+````python
+# hy_policies.py:339-343
+def predict(self, observation, deterministic=True):
+    self.set_training_mode(False)
+    
+    with torch.no_grad():
+        # 使用确定性策略（最大概率动作）
+        actions_disc, actions_con = self._predict(observation, deterministic=True)
+    
+    # 不需要计算 log_prob（推理时不训练）
+    return actions
+````
+
+## 六、数据流示例
+
+### 完整的一次前向传播
+
+````python
+# ========== 输入 ==========
+obs = torch.randn(32, 10)  # 32个环境，10维观察
+
+# ========== 前向传播 ==========
+# 1. 提取特征
+features = self.extract_features(obs)  # [32, features_dim]
+
+# 2. 三头网络
+latent_pi_disc, latent_pi_con, latent_vf = self.mlp_extractor(features)
+# latent_pi_disc: [32, 64]
+
+# 3. 创建分布
+distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+# 内部：logits = action_net_disc(latent_pi_disc)  # [32, 5]
+#      distribution = Categorical(logits=logits)
+
+# 4. 采样动作 ← 选中代码第1行
+actions_disc = distribution_disc.get_actions(deterministic=False)
+# 输出：[32]，每个值是 0-4 的整数
+# 示例：tensor([2, 0, 4, 1, 3, ...])
+
+# 5. 计算对数概率 ← 选中代码第2行
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+# 输出：[32]，每个值是负实数
+# 示例：tensor([-1.2, -0.8, -1.5, -0.6, -1.1, ...])
+
+# ========== 输出 ==========
+# actions_disc: [32] 整数，动作索引
+# log_prob_disc: [32] 实数，对数概率
+````
+
+## 七、与连续动作的对比
+
+### 离散动作（选中代码）
+
+````python
+# 离散动作采样
+actions_disc = distribution_disc.get_actions(deterministic)
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+
+# 分布类型：Categorical
+# 采样方式：torch.multinomial()（随机）或 argmax()（确定性）
+# 输出：整数索引
+````
+
+### 连续动作（对应代码）
+
+````python
+# 连续动作采样
+distribution_con = self._get_action_dist_from_latent_con(latent_pi_con)
+actions_con = distribution_con.get_actions(deterministic)
+log_prob_con = distribution_con.log_prob(actions_con)
+
+# 分布类型：DiagGaussian（对角高斯）
+# 采样方式：μ + σ * ε，其中 ε ~ N(0,1)
+# 输出：实数值
+````
+
+### 对比表格
+
+| 特性 | 离散动作 | 连续动作 |
+|------|---------|---------|
+| **分布类型** | Categorical | DiagGaussian |
+| **输出类型** | 整数索引 | 实数值 |
+| **随机采样** | `torch.multinomial()` | `μ + σ * torch.randn()` |
+| **确定性选择** | `torch.argmax()` | `μ`（均值） |
+| **对数概率** | `log(p[action])` | `log N(a; μ, σ²)` |
+| **动作后处理** | 无需处理 | 裁剪到 `[low, high]` |
+
+## 八、调试技巧
+
+### 1. 打印采样过程
+
+````python
+def forward(self, obs, deterministic=False):
+    # ...前面的代码...
+    
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    
+    # ========== 调试信息 ==========
+    print("=== 离散动作采样 ===")
+    print(f"Deterministic: {deterministic}")
+    print(f"Probs: {distribution_disc.distribution.probs[0]}")  # 第一个环境的概率
+    
+    actions_disc = distribution_disc.get_actions(deterministic)
+    print(f"Sampled action: {actions_disc[0].item()}")
+    
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    print(f"Log prob: {log_prob_disc[0].item():.4f}")
+    
+    return actions_disc, actions_con, values, log_prob_disc, log_prob_con
+````
+
+### 2. 验证概率和为1
+
+````python
+# 检查概率分布是否有效
+probs = distribution_disc.distribution.probs
+assert torch.allclose(probs.sum(dim=-1), torch.ones(probs.shape[0])), \
+    "Probabilities do not sum to 1!"
+````
+
+### 3. 检查对数概率范围
+
+````python
+# 对数概率应该是负数（概率 ≤ 1）
+assert (log_prob_disc <= 0).all(), "Log prob should be non-positive!"
+
+# 对数概率不应该是 -inf（除非概率为0）
+assert torch.isfinite(log_prob_disc).all(), "Log prob contains inf or nan!"
+````
+
+### 4. 比较随机 vs 确定性
+
+````python
+# 随机采样（多样性）
+actions_random = []
+for _ in range(100):
+    action = distribution_disc.get_actions(deterministic=False)
+    actions_random.append(action[0].item())
+
+print(f"Random actions distribution: {Counter(actions_random)}")
+# 输出：{0: 15, 1: 60, 2: 20, 3: 5}（符合概率分布）
+
+# 确定性选择（一致性）
+actions_det = []
+for _ in range(100):
+    action = distribution_disc.get_actions(deterministic=True)
+    actions_det.append(action[0].item())
+
+print(f"Deterministic actions: {set(actions_det)}")
+# 输出：{1}（始终选择概率最大的动作）
+````
+
+## 九、常见错误
+
+### ❌ 错误 1：忘记调用 `get_actions()`
+
+````python
+# ❌ 错误：直接使用分布对象
+actions_disc = distribution_disc  # 这是一个分布对象，不是动作！
+
+# ✅ 正确：调用 get_actions()
+actions_disc = distribution_disc.get_actions(deterministic=False)
+````
+
+### ❌ 错误 2：在错误的时机使用确定性策略
+
+````python
+# ❌ 错误：训练时使用确定性策略（缺乏探索）
+actions_disc = distribution_disc.get_actions(deterministic=True)
+# 导致策略无法探索新动作
+
+# ✅ 正确：训练时随机采样，测试时确定性
+if self.training:
+    actions_disc = distribution_disc.get_actions(deterministic=False)
+else:
+    actions_disc = distribution_disc.get_actions(deterministic=True)
+````
+
+### ❌ 错误 3：忘记存储对数概率
+
+````python
+# ❌ 错误：只采样动作，不记录概率
+actions_disc = distribution_disc.get_actions(deterministic=False)
+# 没有计算 log_prob_disc，无法训练
+
+# ✅ 正确：同时采样和记录
+actions_disc = distribution_disc.get_actions(deterministic=False)
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+# 存储到 buffer 用于训练
+````
+
+### ❌ 错误 4：对数概率的动作维度不匹配
+
+````python
+# ❌ 错误：actions 形状不对
+actions_disc = torch.tensor([[1], [2]])  # [batch, 1]
+log_prob = distribution_disc.log_prob(actions_disc)  # ❌ 维度错误
+
+# ✅ 正确：actions 应该是 [batch] 形状
+actions_disc = torch.tensor([1, 2])  # [batch]
+log_prob = distribution_disc.log_prob(actions_disc)  # ✅ 正确
+````
+
+## 十、总结
+
+### 选中代码的作用
+
+````python
+# 第1行：从分布中采样离散动作
+actions_disc = distribution_disc.get_actions(deterministic=deterministic)
+
+# 第2行：计算采样动作的对数概率
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+````
+
+### 关键点
+
+1. **`get_actions()`**：根据 `deterministic` 参数选择采样策略
+   - 训练时（`False`）：随机采样，用于探索
+   - 测试时（`True`）：选择最大概率动作，用于利用
+
+2. **`log_prob()`**：计算给定动作的对数概率
+   - 用于 PPO 的重要性采样比率计算
+   - 数值稳定且梯度性质好
+
+3. **两步必须连续**：采样后立即计算对数概率，存储到 buffer 用于训练
+
+4. **与连续动作并行**：相同的逻辑应用于连续动作，但使用不同的分布类型
+
+这两行代码是强化学习策略梯度方法的核心，连接了策略网络输出和实际动作执行，为后续的 PPO 损失计算提供必要的数据。
+
+# 对数概率（Log Probability）详解
+
+## 一、什么是对数概率？
+
+### 1. 定义
+
+**对数概率**是概率的自然对数，即：
+
+```python
+log_prob = log(prob)
+```
+
+**关键特性**：
+- **概率范围**：`prob ∈ (0, 1]`
+- **对数概率范围**：`log_prob ∈ (-∞, 0]`
+- **概率越小，对数概率越负**
+
+### 2. 示例对比
+
+| 概率 (prob) | 对数概率 (log_prob) | 含义 |
+|-------------|---------------------|------|
+| `1.0` | `0.0` | 完全确定（100%概率） |
+| `0.5` | `-0.693` | 50%概率 |
+| `0.1` | `-2.303` | 10%概率 |
+| `0.01` | `-4.605` | 1%概率 |
+| `0.0001` | `-9.210` | 0.01%概率（极不可能） |
+
+**观察**：
+- 概率从 `0.1 → 0.01`（降低10倍），对数概率从 `-2.3 → -4.6`（相差约2.3）
+- **对数将乘法变加法**：`log(p1 * p2) = log(p1) + log(p2)`
+
+## 二、为什么使用对数概率？
+
+### 原因 1：数值稳定性
+
+**问题：直接使用概率会下溢**
+
+```python
+# ❌ 问题：极小概率相乘导致下溢
+prob1 = 0.0001  # 动作1的概率
+prob2 = 0.0001  # 动作2的概率
+prob3 = 0.0001  # 动作3的概率
+
+# 连续相乘
+prob_product = prob1 * prob2 * prob3
+print(prob_product)  # 1e-12（接近浮点数下限）
+
+# 更多相乘会导致下溢为0
+prob_product = 1.0
+for _ in range(100):
+    prob_product *= 0.01
+print(prob_product)  # 0.0（下溢！）
+```
+
+**解决：使用对数概率**
+
+```python
+# ✅ 解决：对数概率相加，避免下溢
+log_prob1 = log(0.0001)  # -9.21
+log_prob2 = log(0.0001)  # -9.21
+log_prob3 = log(0.0001)  # -9.21
+
+# 对数相加替代概率相乘
+log_prob_sum = log_prob1 + log_prob2 + log_prob3
+print(log_prob_sum)  # -27.63（稳定！）
+
+# 需要时再转回概率
+prob_product = exp(log_prob_sum)  # 1e-12
+```
+
+### 原因 2：计算效率
+
+**问题：概率乘法计算复杂**
+
+```python
+# 计算联合概率：P(a1, a2, ..., an)
+prob = p1 * p2 * p3 * ... * pn
+```
+
+**解决：对数概率变加法**
+
+```python
+# 对数空间：log P(a1, a2, ..., an)
+log_prob = log_p1 + log_p2 + log_p3 + ... + log_pn
+```
+
+**优势**：
+- **加法比乘法快**（尤其在GPU上）
+- **减少浮点运算误差**
+
+### 原因 3：梯度性质更好
+
+**问题：概率接近0时梯度爆炸**
+
+```python
+# 概率的梯度
+d/dx prob = d/dx exp(logit) = exp(logit) * d/dx logit
+
+# 当 prob → 0 时，梯度可能爆炸或消失
+```
+
+**解决：对数概率梯度更平滑**
+
+```python
+# 对数概率的梯度
+d/dx log(prob) = 1/prob * d/dx prob
+
+# 梯度更稳定，训练更容易
+```
+
+## 三、在强化学习中的计算
+
+### 1. 离散动作的对数概率
+
+#### 步骤1：神经网络输出 logits
+
+```python
+# 在 hy_policies.py 中
+latent_pi_disc = self.mlp_extractor.forward_actor_disc(features)  # [batch, 64]
+
+# 通过线性层获取 logits
+mean_actions = self.action_net_disc(latent_pi_disc)  # [batch, n_actions]
+
+# 示例输出（5个动作）
+logits = tensor([
+    [ 0.3,  1.2, -0.5,  0.8, -0.2],  # 环境0
+    [-0.4,  0.6,  1.5, -0.1,  0.3]   # 环境1
+])
+```
+
+#### 步骤2：Softmax 转换为概率
+
+```python
+# 内部自动执行 softmax
+probs = F.softmax(logits, dim=-1)
+
+# 手动计算示例（环境0）
+logits_0 = [0.3, 1.2, -0.5, 0.8, -0.2]
+
+# 计算分母（归一化常数）
+sum_exp = sum(exp(z) for z in logits_0)
+        = exp(0.3) + exp(1.2) + exp(-0.5) + exp(0.8) + exp(-0.2)
+        = 1.35 + 3.32 + 0.61 + 2.23 + 0.82
+        = 8.33
+
+# 计算每个动作的概率
+probs_0 = [
+    exp(0.3) / 8.33 = 0.162,   # 动作0: 16.2%
+    exp(1.2) / 8.33 = 0.399,   # 动作1: 39.9% ← 最高
+    exp(-0.5) / 8.33 = 0.073,  # 动作2: 7.3%
+    exp(0.8) / 8.33 = 0.268,   # 动作3: 26.8%
+    exp(-0.2) / 8.33 = 0.098   # 动作4: 9.8%
+]
+```
+
+#### 步骤3：采样动作
+
+```python
+# 在 hy_policies.py:542 中
+distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+actions_disc = distribution_disc.get_actions(deterministic=False)
+
+# 根据概率分布随机采样
+# 假设环境0采样到动作1（概率39.9%）
+actions_disc = tensor([1, 2])  # 环境0选动作1，环境1选动作2
+```
+
+#### 步骤4：计算对数概率
+
+```python
+# 在 hy_policies.py:543 中
+log_prob_disc = distribution_disc.log_prob(actions_disc)
+
+# 手动计算
+# 环境0选择动作1：
+prob_0 = probs[0, 1] = 0.399
+log_prob_0 = log(0.399) = -0.919
+
+# 环境1选择动作2：
+prob_1 = probs[1, 2] = 0.54
+log_prob_1 = log(0.54) = -0.616
+
+# 输出
+log_prob_disc = tensor([-0.919, -0.616])
+```
+
+#### 完整数学公式
+
+````python
+# 给定 logits: z = [z_1, z_2, ..., z_n]
+
+# 1. Softmax 计算概率
+p_i = exp(z_i) / Σ_j exp(z_j)
+
+# 2. 对数概率（log-softmax）
+log(p_i) = log(exp(z_i) / Σ_j exp(z_j))
+         = log(exp(z_i)) - log(Σ_j exp(z_j))
+         = z_i - log(Σ_j exp(z_j))
+         = z_i - log_sum_exp(z)
+
+# PyTorch 实现
+log_probs = F.log_softmax(logits, dim=-1)
+log_prob = log_probs[action]
+````
+
+### 2. 连续动作的对数概率
+
+#### 高斯分布的对数概率
+
+```python
+# 在 hy_policies.py:561-567 中
+def _get_action_dist_from_latent_con(self, latent_pi):
+    mean_actions = self.action_net_con(latent_pi)  # 均值 μ
+    # log_std 是可学习参数
+    return self.action_dist_con.proba_distribution(mean_actions, self.log_std)
+```
+
+**高斯分布的概率密度函数**：
+
+```python
+# 单变量高斯分布
+p(x | μ, σ) = 1/(σ√(2π)) * exp(-(x-μ)²/(2σ²))
+
+# 对数概率（避免计算 exp 和除法）
+log p(x | μ, σ) = -log(σ) - 0.5*log(2π) - (x-μ)²/(2σ²)
+```
+
+**代码示例**：
+
+````python
+# 假设连续动作空间维度为3
+mean = torch.tensor([[0.5, -0.3, 0.8]])  # 均值 μ
+log_std = torch.tensor([-1.0, -1.0, -1.0])  # 对数标准差
+std = torch.exp(log_std)  # σ = exp(log_std) = [0.368, 0.368, 0.368]
+
+# 采样的动作
+action = torch.tensor([[0.6, -0.2, 0.9]])
+
+# 计算对数概率（每个维度独立）
+log_prob_dim = -log_std - 0.5*log(2π) - (action - mean)² / (2 * std²)
+
+# 示例计算（第1维）
+log_prob_0 = -(-1.0) - 0.5*log(2π) - (0.6-0.5)² / (2 * 0.368²)
+           = 1.0 - 0.919 - 0.01 / 0.271
+           = 1.0 - 0.919 - 0.037
+           = 0.044
+
+# 多维情况下，对数概率相加
+log_prob_total = sum(log_prob_dim) = 0.044 + 0.032 + 0.029 = 0.105
+````
+
+## 四、在 PPO 中的使用
+
+### 1. 重要性采样比率
+
+查看 [`hy_ppo.py:166-168`](hy_ppo.py )：
+
+````python
+# ========== 计算新旧策略的对数概率差 ==========
+# 旧策略的对数概率（从 buffer 读取）
+old_log_prob = rollout_data.old_log_probs_disc  # 如 -1.5
+
+# 新策略的对数概率（当前策略重新评估）
+values, log_prob_disc, log_prob_con, entropy_disc, entropy_con = \
+    self.policy.evaluate_actions(
+        rollout_data.observations,
+        rollout_data.actions_disc,
+        rollout_data.actions_con
+    )
+# 新的对数概率，如 -1.0
+
+# ========== 计算重要性采样比率 ==========
+ratio = torch.exp(log_prob_disc - old_log_prob)
+# ratio = exp(-1.0 - (-1.5)) = exp(0.5) ≈ 1.65
+
+# 数学含义
+# ratio = P_new(a) / P_old(a)
+#       = exp(log P_new(a)) / exp(log P_old(a))
+#       = exp(log P_new(a) - log P_old(a))
+````
+
+**为什么这样计算**：
+
+```python
+# 方法1：直接计算比率（❌ 数值不稳定）
+ratio = prob_new / prob_old
+# 如果 prob_old 很小，可能除以接近0的数
+
+# 方法2：对数概率差（✅ 数值稳定）
+ratio = exp(log_prob_new - log_prob_old)
+# 对数空间的减法 = 原空间的除法
+# log(a/b) = log(a) - log(b)
+```
+
+### 2. PPO 裁剪损失
+
+````python
+# 在 hy_ppo.py:172-177 中
+advantages = rollout_data.advantages  # [batch_size]
+
+# ========== 计算两种损失 ==========
+# 损失1：未裁剪的策略梯度
+policy_loss_1 = advantages * ratio
+
+# 损失2：裁剪的策略梯度
+policy_loss_2 = advantages * torch.clamp(
+    ratio, 
+    1 - clip_range,  # 如 0.8
+    1 + clip_range   # 如 1.2
+)
+
+# ========== 取较小者（保守更新）==========
+policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+````
+
+**示例**：
+
+```python
+# 假设：
+advantage = 2.0      # 正优势（好动作）
+old_log_prob = -1.5
+clip_range = 0.2
+
+# 情况1：策略变化小（ratio=1.1，在裁剪范围内）
+new_log_prob_1 = -1.4
+ratio_1 = exp(-1.4 - (-1.5)) = exp(0.1) = 1.105
+
+policy_loss_1 = 2.0 * 1.105 = 2.21
+policy_loss_2 = 2.0 * clamp(1.105, 0.8, 1.2) = 2.0 * 1.105 = 2.21
+policy_loss = min(2.21, 2.21) = 2.21  # 正常更新
+
+# 情况2：策略变化大（ratio=2.0，超出裁剪范围）
+new_log_prob_2 = -0.8
+ratio_2 = exp(-0.8 - (-1.5)) = exp(0.7) = 2.014
+
+policy_loss_1 = 2.0 * 2.014 = 4.028
+policy_loss_2 = 2.0 * clamp(2.014, 0.8, 1.2) = 2.0 * 1.2 = 2.4
+policy_loss = min(4.028, 2.4) = 2.4  # 被裁剪，防止更新过大
+```
+
+### 3. 熵正则化
+
+````python
+# 在 hy_ppo.py:181-182 中
+# 计算熵（探索度量）
+entropy_disc = distribution_disc.entropy()
+
+# 熵损失（负号表示最大化熵）
+entropy_loss = -entropy_disc.mean()
+
+# 总损失
+loss = policy_loss + ent_coef_disc * entropy_loss
+#      ↑ 优化策略    ↑ 鼓励探索
+````
+
+**熵的对数概率关系**：
+
+```python
+# 离散分布的熵
+H(p) = -Σ p_i * log(p_i)
+
+# 示例：
+probs = [0.1, 0.6, 0.2, 0.1]
+
+# 计算每项
+entropy = -(0.1*log(0.1) + 0.6*log(0.6) + 0.2*log(0.2) + 0.1*log(0.1))
+        = -(0.1*(-2.3) + 0.6*(-0.51) + 0.2*(-1.61) + 0.1*(-2.3))
+        = -(-0.23 - 0.306 - 0.322 - 0.23)
+        = 1.088
+
+# 熵越高，分布越均匀，探索性越强
+```
+
+## 五、代码中的完整示例
+
+### 示例：训练一个 mini-batch
+
+````python
+# ========== 1. 收集经验（collect_rollouts）==========
+with torch.no_grad():
+    # 前向传播，采样动作
+    actions_disc, actions_con, values, log_probs_disc, log_probs_con = \
+        self.policy.forward(obs, deterministic=False)
+    
+    # 示例输出
+    # actions_disc = [1, 2, 0]  # 3个环境的离散动作
+    # log_probs_disc = [-0.919, -0.616, -1.204]  # 对数概率
+
+# 存储到 buffer
+self.rollout_buffer.add(
+    obs,
+    actions_disc,
+    actions_con,
+    rewards,
+    dones,
+    values,
+    log_probs_disc,  # ← 存储旧的对数概率
+    log_probs_con
+)
+
+# ========== 2. 训练（train）==========
+for rollout_data in self.rollout_buffer.get(batch_size=64):
+    # 重新评估旧动作
+    values, log_prob_disc, log_prob_con, entropy_disc, entropy_con = \
+        self.policy.evaluate_actions(
+            rollout_data.observations,
+            rollout_data.actions_disc,  # 旧动作
+            rollout_data.actions_con
+        )
+    
+    # 示例：
+    # old_log_prob = rollout_data.old_log_probs_disc = [-0.919, -0.616, -1.204]
+    # log_prob_disc（新策略）= [-0.850, -0.700, -1.100]
+    
+    # 计算比率
+    ratio = torch.exp(log_prob_disc - rollout_data.old_log_probs_disc)
+    # ratio = [exp(-0.850-(-0.919)), exp(-0.700-(-0.616)), exp(-1.100-(-1.204))]
+    #       = [exp(0.069), exp(-0.084), exp(0.104)]
+    #       = [1.071, 0.919, 1.110]
+    
+    # PPO 损失
+    advantages = rollout_data.advantages  # [2.5, -1.2, 0.8]
+    policy_loss_1 = advantages * ratio
+    #              = [2.5*1.071, -1.2*0.919, 0.8*1.110]
+    #              = [2.678, -1.103, 0.888]
+    
+    policy_loss_2 = advantages * torch.clamp(ratio, 0.8, 1.2)
+    #              = [2.5*1.071, -1.2*0.919, 0.8*1.110]
+    #              = [2.678, -1.103, 0.888]  # 都在裁剪范围内
+    
+    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+    #            = -mean([2.678, -1.103, 0.888])
+    #            = -0.821
+    
+    # 熵损失
+    entropy_loss = -entropy_disc.mean()  # 鼓励探索
+    
+    # 总损失
+    loss = policy_loss + 0.01 * entropy_loss
+    
+    # 反向传播
+    self.disc_optimizer.zero_grad()
+    loss.backward()
+    self.disc_optimizer.step()
+````
+
+## 六、调试技巧
+
+### 1. 打印对数概率
+
+````python
+def forward(self, obs, deterministic=False):
+    # ...省略其他代码...
+    
+    log_prob_disc = distribution_disc.log_prob(actions_disc)
+    
+    # ========== 调试输出 ==========
+    print("=== 对数概率调试 ===")
+    print(f"Probs: {distribution_disc.distribution.probs[0]}")
+    print(f"Action: {actions_disc[0].item()}")
+    print(f"Log prob: {log_prob_disc[0].item():.4f}")
+    
+    # 手动验证
+    prob = distribution_disc.distribution.probs[0, actions_disc[0]]
+    manual_log_prob = torch.log(prob)
+    print(f"Manual log prob: {manual_log_prob.item():.4f}")
+    
+    return actions_disc, actions_con, values, log_prob_disc, log_prob_con
+````
+
+### 2. 检查对数概率范围
+
+````python
+# 对数概率应该 ≤ 0（概率 ≤ 1）
+assert (log_prob_disc <= 0).all(), "Log prob should be non-positive!"
+
+# 对数概率不应该是 -inf（除非概率为0）
+assert torch.isfinite(log_prob_disc).all(), "Log prob contains inf or nan!"
+
+# 检查是否过小（可能是数值问题）
+if (log_prob_disc < -10).any():
+    print("Warning: Very small log probs detected!")
+    print(f"Min log prob: {log_prob_disc.min().item():.4f}")
+````
+
+### 3. 比较新旧对数概率
+
+````python
+# 在训练循环中
+old_log_prob = rollout_data.old_log_probs_disc
+new_log_prob = log_prob_disc
+
+# 计算差异
+log_prob_diff = new_log_prob - old_log_prob
+ratio = torch.exp(log_prob_diff)
+
+print(f"Old log prob: {old_log_prob[0].item():.4f}")
+print(f"New log prob: {new_log_prob[0].item():.4f}")
+print(f"Log prob diff: {log_prob_diff[0].item():.4f}")
+print(f"Ratio: {ratio[0].item():.4f}")
+
+# 检查比率是否合理（应该接近1）
+if (ratio < 0.5).any() or (ratio > 2.0).any():
+    print("Warning: Large policy change detected!")
+````
+
+## 七、总结
+
+### 核心要点
+
+1. **对数概率 = log(概率)**
+   - 将概率从 `(0,1]` 映射到 `(-∞, 0]`
+   - 乘法变加法：`log(p1*p2) = log(p1) + log(p2)`
+
+2. **为什么使用对数概率**
+   - **数值稳定**：避免极小概率相乘导致的下溢
+   - **计算高效**：加法比乘法快
+   - **梯度友好**：避免梯度爆炸/消失
+
+3. **计算方法**
+   - **离散动作**：`log_softmax(logits)[action]`
+   - **连续动作**：高斯分布的对数概率密度
+
+4. **在 PPO 中的应用**
+   - **重要性采样**：`ratio = exp(log_prob_new - log_prob_old)`
+   - **策略梯度**：`loss = -advantages * ratio`
+   - **熵正则化**：`entropy = -Σ p * log(p)`
+
+5. **关键公式**
+   ````python
+   # 离散动作
+   log_prob = z_i - log_sum_exp(z)  # log-softmax
+   
+   # 连续动作
+   log_prob = -log(σ) - 0.5*log(2π) - (x-μ)²/(2σ²)
+   
+   # 重要性采样
+   ratio = exp(log_prob_new - log_prob_old) = P_new / P_old
+   ````
+
+对数概率是现代深度强化学习算法的基础，理解它对于掌握 PPO、TRPO、SAC 等算法至关重要。对数概率是现代深度强化学习算法的基础，理解它对于掌握 PPO、TRPO、SAC 等算法至关重要。
+
+# `self.action_dist_con.proba_distribution_net()` 详解
+
+## 一、选中代码的上下文
+
+查看 `hy_policies.py:477-479`:
+
+````python
+self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
+    latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+)
+````
+
+这行代码是在 `_build()` 方法中调用的，用于**创建连续动作的输出层和对数标准差参数**。
+
+## 二、`self.action_dist_con` 是什么？
+
+### 1. 创建位置
+
+在 `hy_policies.py:429` 中创建：
+
+````python
+# 在 __init__ 中
+self.action_dist_con = make_proba_distribution(
+    self.action_space_con,  # spaces.Box(low=-1, high=1, shape=(3,))
+    use_sde=use_sde,        # 是否使用状态依赖探索
+    dist_kwargs=dist_kwargs # 分布的额外参数
+)
+# 返回: DiagGaussianDistribution 实例
+````
+
+**类型**：`DiagGaussianDistribution` 实例
+
+**作用**：作为**分布工厂**，用于创建高斯分布相关的网络层和参数。
+
+### 2. 为什么是对角高斯分布？
+
+**对角高斯分布（Diagonal Gaussian Distribution）**：
+
+- **假设**：各个动作维度**相互独立**
+- **协方差矩阵**：对角矩阵（非对角元素为0）
+- **参数**：
+  - **均值 μ**：每个动作维度的均值
+  - **标准差 σ**：每个动作维度的标准差（以对数形式 `log_std` 存储）
+
+**示例**：
+
+````python
+# 假设连续动作空间维度为3
+action_space_con = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
+
+# 对角高斯分布的参数
+μ = [0.5, -0.3, 0.8]       # 均值向量
+σ = [0.5, 0.5, 0.5]        # 标准差向量（独立）
+
+# 协方差矩阵（对角矩阵）
+Σ = [[0.25,  0,    0   ],
+     [0,     0.25, 0   ],
+     [0,     0,    0.25]]
+
+# 采样动作
+action ~ N(μ, Σ)
+````
+
+## 三、`proba_distribution_net()` 方法详解
+
+### 1. 方法定义
+
+来自 Stable-Baselines3 的 `DiagGaussianDistribution` 类（`distributions.py:138-152`）：
+
+````python
+def proba_distribution_net(
+    self, 
+    latent_dim: int,           # 策略网络最后一层的维度
+    log_std_init: float = 0.0  # 对数标准差的初始值
+) -> Tuple[nn.Module, nn.Parameter]:
+    """
+    创建表示分布的层和参数：
+    - 一个输出层产生高斯分布的均值
+    - 另一个参数表示标准差（实际存储为对数形式，允许负值）
+    
+    参数:
+        latent_dim: 策略网络最后一层的维度（动作层之前）
+        log_std_init: 对数标准差的初始值
+    
+    返回:
+        (mean_actions, log_std): 元组
+            - mean_actions: nn.Linear 层，输出动作均值
+            - log_std: nn.Parameter，可学习的对数标准差
+    """
+    # ========== 创建均值输出层 ==========
+    mean_actions = nn.Linear(latent_dim, self.action_dim)
+    
+    # ========== 创建对数标准差参数 ==========
+    # TODO: 支持动作依赖的标准差
+    log_std = nn.Parameter(
+        th.ones(self.action_dim) * log_std_init, 
+        requires_grad=True
+    )
+    
+    return mean_actions, log_std
+````
+
+### 2. 返回值结构
+
+````python
+# 假设：
+# - latent_dim_pi = 64（三头网络策略分支的输出维度）
+# - action_space_con = spaces.Box(shape=(3,))（3维连续动作）
+# - log_std_init = 0.0（初始对数标准差）
+
+self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
+    latent_dim=64, 
+    log_std_init=0.0
+)
+
+# ========== 返回的结构 ==========
+
+# 1. self.action_net_con: nn.Linear 层
+self.action_net_con = nn.Linear(
+    in_features=64,   # 输入：策略嵌入维度
+    out_features=3    # 输出：动作空间维度（均值 μ）
+)
+
+# 2. self.log_std: nn.Parameter
+self.log_std = nn.Parameter(
+    torch.tensor([0.0, 0.0, 0.0]),  # 初始值全为 0.0
+    requires_grad=True               # 可学习参数
+)
+````
+
+## 四、两个返回值的作用
+
+### 1. `self.action_net_con`（均值输出层）
+
+**类型**：`nn.Linear` 层
+
+**作用**：将连续动作的嵌入向量映射到动作均值 μ
+
+**网络结构**：
+
+````python
+# 输入：latent_pi_con [batch_size, 64]
+# 输出：mean_actions [batch_size, 3]
+
+mean_actions = self.action_net_con(latent_pi_con)
+
+# 内部实现
+mean_actions = latent_pi_con @ self.action_net_con.weight.T + self.action_net_con.bias
+
+# 示例输出
+mean_actions = tensor([
+    [ 0.5, -0.3,  0.8],  # 环境0的动作均值
+    [-0.2,  0.6,  0.1]   # 环境1的动作均值
+])
+````
+
+**语义**：每个维度的均值表示该维度动作的**期望值**。
+
+### 2. `self.log_std`（对数标准差参数）
+
+**类型**：`nn.Parameter`（可学习参数）
+
+**作用**：表示动作分布的**不确定性**（探索程度）
+
+**为什么存储对数标准差**？
+
+````python
+# ❌ 直接存储标准差的问题
+std = nn.Parameter(torch.ones(3) * 0.5)  # 标准差必须 > 0
+# 优化过程中可能变成负数，导致错误
+
+# ✅ 存储对数标准差（log_std）
+log_std = nn.Parameter(torch.ones(3) * 0.0)  # log_std 可以是任意实数
+std = torch.exp(log_std)  # std = exp(log_std) > 0，保证始终为正
+````
+
+**初始值的含义**：
+
+````python
+# log_std_init = 0.0
+log_std = [0.0, 0.0, 0.0]
+
+# 转换为标准差
+std = exp(log_std) = [exp(0.0), exp(0.0), exp(0.0)] = [1.0, 1.0, 1.0]
+
+# 含义：初始探索程度适中
+````
+
+**不同初始值的影响**：
+
+| `log_std_init` | 初始 `std` | 探索程度 | 适用场景 |
+|----------------|-----------|---------|---------|
+| `-1.0` | `0.368` | 低探索 | 动作范围小的环境 |
+| `0.0` | `1.0` | 中等探索（默认） | 标准设置 |
+| `0.5` | `1.649` | 高探索 | 复杂环境，需要更多探索 |
+
+**训练过程中的变化**：
+
+````python
+# 初始状态（训练开始）
+log_std = [0.0, 0.0, 0.0]
+std = [1.0, 1.0, 1.0]  # 较大的探索
+
+# 训练中期（策略逐渐改进）
+log_std = [-0.5, -0.3, -0.4]  # 通过梯度下降更新
+std = [0.606, 0.741, 0.670]   # 探索逐渐减少
+
+# 训练后期（策略接近最优）
+log_std = [-2.0, -1.8, -2.2]
+std = [0.135, 0.165, 0.111]   # 探索很小，策略确定性增强
+````
+
+## 五、完整的数据流
+
+### 1. 从嵌入到动作采样
+
+````python
+观察 (obs)
+    ↓
+extract_features()  # 提取特征
+    ↓
+特征向量 (features) [batch, features_dim]
+    ↓
+mlp_extractor.forward_actor_con()  # 连续动作分支
+    ↓
+连续动作嵌入 (latent_pi_con) [batch, 64]
+    ↓
+action_net_con (Linear层) ← 这里创建！
+    ↓
+动作均值 (mean_actions) [batch, 3]
+    │
+    ├─ 与 log_std 参数结合 ← 这里创建！
+    ↓
+创建 DiagGaussian 分布
+    ↓
+采样连续动作 [batch, 3]
+````
+
+### 2. 在代码中的使用
+
+#### 步骤1：创建网络层（在 `_build` 中）
+
+````python
+# hy_policies.py:477-479
+self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
+    latent_dim=latent_dim_pi,    # 64
+    log_std_init=self.log_std_init  # 0.0
+)
+
+# 创建的结构：
+# self.action_net_con: Linear(64, 3)
+# self.log_std: Parameter([0.0, 0.0, 0.0])
+````
+
+#### 步骤2：前向传播获取均值（在 `_get_action_dist_from_latent_con` 中）
+
+查看 `hy_policies.py:562-563`:
+
+````python
+def _get_action_dist_from_latent_con(self, latent_pi: th.Tensor) -> Distribution:
+    # ========== 计算均值 ==========
+    mean_actions = self.action_net_con(latent_pi)
+    # 输入: [batch_size, 64]
+    # 输出: [batch_size, 3]  ← 动作均值 μ
+    
+    # ========== 创建分布 ==========
+    if isinstance(self.action_dist_con, DiagGaussianDistribution):
+        return self.action_dist_con.proba_distribution(
+            mean_actions,  # 均值 μ
+            self.log_std   # 对数标准差 log(σ)
+        )
+````
+
+#### 步骤3：创建高斯分布（在 `proba_distribution` 中）
+
+查看 `distributions.py:154-166`：
+
+````python
+def proba_distribution(
+    self, 
+    mean_actions: th.Tensor,  # [batch, 3]
+    log_std: th.Tensor        # [3]
+) -> SelfDiagGaussianDistribution:
+    """
+    根据参数（均值、标准差）创建分布
+    """
+    # ========== 计算标准差 ==========
+    action_std = th.ones_like(mean_actions) * log_std.exp()
+    # action_std = exp(log_std) = [1.0, 1.0, 1.0]
+    # 广播到 [batch, 3]
+    
+    # ========== 创建 PyTorch Normal 分布 ==========
+    self.distribution = Normal(mean_actions, action_std)
+    # Normal(μ=[batch,3], σ=[batch,3])
+    
+    return self
+````
+
+#### 步骤4：采样动作（在 `forward` 中）
+
+查看 `hy_policies.py:546`:
+
+````python
+def forward(self, obs, deterministic=False):
+    # ...省略其他代码...
+    
+    # 创建分布
+    distribution_con = self._get_action_dist_from_latent_con(latent_pi_con)
+    
+    # ========== 采样连续动作 ==========
+    actions_con = distribution_con.get_actions(deterministic=deterministic)
+    
+    # 内部实现：
+    if deterministic:
+        # 确定性：直接返回均值
+        actions_con = distribution_con.mode()  # 返回 μ
+    else:
+        # 随机：从高斯分布采样
+        actions_con = distribution_con.sample()  # μ + σ * ε，ε ~ N(0,1)
+    
+    # ========== 计算对数概率 ==========
+    log_prob_con = distribution_con.log_prob(actions_con)
+    
+    return actions_disc, actions_con, values, log_prob_disc, log_prob_con
+````
+
+## 六、数学原理
+
+### 1. 高斯分布的概率密度函数
+
+````python
+# 单变量高斯分布
+p(x | μ, σ) = 1/(σ√(2π)) * exp(-(x-μ)²/(2σ²))
+
+# 多变量对角高斯分布（各维度独立）
+p(x | μ, Σ) = ∏ᵢ p(xᵢ | μᵢ, σᵢ)
+
+# 对数概率（避免数值下溢）
+log p(x | μ, σ) = -log(σ) - 0.5*log(2π) - (x-μ)²/(2σ²)
+````
+
+### 2. 重参数化技巧（Reparameterization Trick）
+
+**问题**：直接从分布采样无法反向传播梯度
+
+````python
+# ❌ 不可微分
+x = sample(N(μ, σ))  # 采样操作不可微
+loss = f(x)
+loss.backward()  # 梯度无法传递到 μ 和 σ
+````
+
+**解决**：重参数化
+
+````python
+# ✅ 可微分
+ε ~ N(0, 1)           # 从标准正态分布采样（与参数无关）
+x = μ + σ * ε         # 确定性变换（可微）
+loss = f(x)
+loss.backward()       # 梯度可以传递到 μ 和 σ
+````
+
+**代码实现**：
+
+查看 `distributions.py:179-181`：
+
+````python
+def sample(self) -> th.Tensor:
+    # 使用重参数化技巧
+    return self.distribution.rsample()  # ← r 表示 reparameterized
+    
+    # PyTorch 内部实现：
+    # epsilon = torch.randn_like(mean)
+    # return mean + std * epsilon
+````
+
+### 3. 标准差的指数变换
+
+````python
+# 存储对数标准差
+log_std = [-1.0, 0.0, 1.0]
+
+# 转换为标准差（保证正值）
+std = exp(log_std) = [0.368, 1.0, 2.718]
+
+# 采样动作
+ε ~ N(0, 1)
+action = μ + std * ε
+
+# 示例：
+μ = [0.5, -0.3, 0.8]
+std = [0.368, 1.0, 2.718]
+ε = [0.5, -1.2, 0.3]  # 随机采样
+
+action = [0.5 + 0.368*0.5, -0.3 + 1.0*(-1.2), 0.8 + 2.718*0.3]
+       = [0.684, -1.5, 1.615]
+````
+
+## 七、与离散动作的对比
+
+| 特性 | 连续动作 (`action_net_con`) | 离散动作 (`action_net_disc`) |
+|------|-------------------------------|----------------------------|
+| **返回值** | `(Linear层, Parameter)` | `Linear层` |
+| **网络输出** | 动作均值 μ | 动作 logits |
+| **额外参数** | `log_std`（可学习） | 无 |
+| **分布类型** | DiagGaussian（高斯） | Categorical（分类） |
+| **采样方式** | `μ + σ * ε` | `torch.multinomial()` |
+| **输出范围** | 实数 (-∞, +∞) | 整数索引 |
+| **动作后处理** | 裁剪到 `[low, high]` | 无需处理 |
+
+### 对比代码
+
+````python
+# ========== 离散动作 ==========
+# 只返回 Linear 层
+self.action_net_disc = self.action_dist_disc.proba_distribution_net(
+    latent_dim=latent_dim_pi
+)
+# 类型: nn.Linear(64, n_actions)
+
+# 使用
+logits = self.action_net_disc(latent_pi_disc)  # [batch, n_actions]
+distribution_disc = CategoricalDistribution(logits=logits)
+action_disc = distribution_disc.sample()  # [batch]
+
+# ========== 连续动作 ==========
+# 返回 Linear 层 + Parameter
+self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
+    latent_dim=latent_dim_pi, 
+    log_std_init=0.0
+)
+# 类型: (nn.Linear(64, action_dim), nn.Parameter([action_dim]))
+
+# 使用
+mean = self.action_net_con(latent_pi_con)  # [batch, action_dim]
+std = torch.exp(self.log_std)              # [action_dim]
+distribution_con = Normal(mean, std)
+action_con = distribution_con.rsample()    # [batch, action_dim]
+````
+
+## 八、参数更新机制
+
+### 1. `self.log_std` 是可学习的
+
+````python
+# 在 _build 中被添加到优化器
+con_parameters = [
+    self.action_net_con.parameters(),  # Linear 层的权重和偏置
+    [self.log_std],                    # ← 对数标准差参数
+    self.mlp_extractor.policy_net_con.parameters()
+]
+
+self.con_optimizer = self.optimizer_class(
+    con_parameters, 
+    lr=lr_schedule(1)
+)
+````
+
+### 2. 训练过程中的更新
+
+````python
+# 在 hy_ppo.py:train() 中
+for rollout_data in self.rollout_buffer.get(batch_size):
+    # ========== 前向传播 ==========
+    mean_actions = self.action_net_con(latent_pi_con)
+    std = torch.exp(self.log_std)  # 动态计算标准差
+    
+    # ========== 计算损失 ==========
+    distribution = Normal(mean_actions, std)
+    log_prob = distribution.log_prob(actions_con)
+    loss = -log_prob.mean()  # 策略梯度损失
+    
+    # ========== 反向传播 ==========
+    self.con_optimizer.zero_grad()
+    loss.backward()
+    
+    # ========== 梯度更新 ==========
+    # self.action_net_con 的权重更新
+    # self.log_std 也会更新！
+    self.con_optimizer.step()
+
+# 训练后，self.log_std 的值会改变
+print(f"Updated log_std: {self.log_std.data}")
+# 示例：从 [0.0, 0.0, 0.0] 变为 [-0.5, -0.3, -0.4]
+````
+
+## 九、调试技巧
+
+### 1. 打印网络结构
+
+````python
+def _build(self, lr_schedule):
+    # ...省略其他代码...
+    
+    self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
+        latent_dim=latent_dim_pi, 
+        log_std_init=self.log_std_init
+    )
+    
+    # ========== 调试输出 ==========
+    print("=== 连续动作网络结构 ===")
+    print(f"action_net_con: {self.action_net_con}")
+    print(f"  输入维度: {self.action_net_con.in_features}")
+    print(f"  输出维度: {self.action_net_con.out_features}")
+    print(f"log_std: {self.log_std}")
+    print(f"  形状: {self.log_std.shape}")
+    print(f"  初始值: {self.log_std.data}")
+    print(f"  初始标准差: {torch.exp(self.log_std).data}")
+````
+
+### 2. 监控训练过程
+
+````python
+def _get_action_dist_from_latent_con(self, latent_pi):
+    mean_actions = self.action_net_con(latent_pi)
+    
+    # ========== 调试信息 ==========
+    print("=== 连续动作分布 ===")
+    print(f"Mean: {mean_actions[0]}")
+    print(f"Log std: {self.log_std.data}")
+    print(f"Std: {torch.exp(self.log_std).data}")
+    
+    # 检查标准差是否过大或过小
+    std = torch.exp(self.log_std)
+    if (std > 5.0).any():
+        print("Warning: Very large std detected!")
+    if (std < 0.01).any():
+        print("Warning: Very small std detected!")
+    
+    return self.action_dist_con.proba_distribution(mean_actions, self.log_std)
+````
+
+### 3. 可视化标准差变化
+
+````python
+import matplotlib.pyplot as plt
+
+# 记录训练过程中的标准差
+log_stds_history = []
+
+def train():
+    for epoch in range(n_epochs):
+        # ...训练代码...
+        
+        # 记录当前标准差
+        log_stds_history.append(self.log_std.detach().cpu().numpy().copy())
+
+# 绘图
+plt.figure(figsize=(10, 6))
+log_stds = np.array(log_stds_history)
+for i in range(log_stds.shape[1]):
+    plt.plot(log_stds[:, i], label=f'Dim {i}')
+plt.xlabel('Training Steps')
+plt.ylabel('Log Std')
+plt.title('连续动作标准差随训练变化')
+plt.legend()
+plt.grid(True)
+plt.show()
+````
+
+## 十、常见错误
+
+### ❌ 错误 1：忘记转换标准差
+
+````python
+# ❌ 错误：直接使用 log_std
+distribution = Normal(mean_actions, self.log_std)  # log_std 是负数！
+
+# ✅ 正确：先转换为标准差
+std = torch.exp(self.log_std)
+distribution = Normal(mean_actions, std)
+````
+
+### ❌ 错误 2：标准差初始化不当
+
+````python
+# ❌ 错误：初始标准差过小
+log_std_init = -5.0  # std = exp(-5) = 0.0067，几乎没有探索
+
+# ❌ 错误：初始标准差过大
+log_std_init = 3.0   # std = exp(3) = 20.09，动作变化太剧烈
+
+# ✅ 正确：使用合理的初始值
+log_std_init = 0.0   # std = 1.0，标准设置
+````
+
+### ❌ 错误 3：维度不匹配
+
+````python
+# ❌ 错误：log_std 维度与动作空间不匹配
+log_std = nn.Parameter(torch.ones(5) * 0.0)  # 5维
+# 但动作空间是 3 维
+
+# ✅ 正确：自动根据动作空间创建
+mean_actions, log_std = self.action_dist_con.proba_distribution_net(
+    latent_dim=64, 
+    log_std_init=0.0
+)
+# log_std 会自动是 [action_dim] 形状
+````
+
+### ❌ 错误 4：忘记裁剪动作
+
+````python
+# ❌ 错误：采样后不裁剪
+actions_con = distribution_con.sample()  # 可能超出 [low, high]
+
+# ✅ 正确：裁剪到动作空间范围
+actions_con = distribution_con.sample()
+actions_con = torch.clamp(
+    actions_con, 
+    torch.tensor(self.action_space_con.low).to(self.device),
+    torch.tensor(self.action_space_con.high).to(self.device)
+)
+````
+
+## 十一、总结
+
+### 核心结构
+
+````python
+self.action_net_con, self.log_std = self.action_dist_con.proba_distribution_net(
+    latent_dim=latent_dim_pi,
+    log_std_init=self.log_std_init
+)
+
+# 返回：
+# 1. action_net_con: nn.Linear(latent_dim_pi, action_dim)
+#    作用：将嵌入映射到动作均值 μ
+#
+# 2. log_std: nn.Parameter(torch.ones(action_dim) * log_std_init)
+#    作用：表示动作的不确定性（探索程度）
+#    可学习：通过梯度下降自动调整
+````
+
+### 关键点
+
+1. **两个返回值**：
+   - **`action_net_con`**：Linear 层，输出均值 μ
+   - **`log_std`**：Parameter，存储对数标准差 log(σ)
+
+2. **为什么存储对数标准差**：
+   - 保证 `std = exp(log_std) > 0`
+   - 支持任意实数范围的优化
+
+3. **探索与利用的平衡**：
+   - 大 `std`：高探索，动作多样性强
+   - 小 `std`：低探索，动作确定性强
+   - 训练过程中自动调整
+
+4. **重参数化技巧**：
+   - `action = μ + σ * ε`（ε ~ N(0,1)）
+   - 使采样操作可微，支持梯度传播
+
+5. **与离散动作的差异**：
+   - 连续：需要额外的 `log_std` 参数
+   - 离散：只需要 `action_net_disc`（输出 logits）
+
+理解 `proba_distribution_net()` 对于掌握连续动作空间的策略梯度方法至关重要，它定义了如何从策略网络的输出构建高斯分布，从而实现探索与利用的平衡。
+
+Using "Codebase"
+
+Searched for text `StateDependentNoiseDistribution`, 16 results
+
+Searched codebase for "StateDependentNoiseDistribution gSDE state dependent exploration", 19 results
+
+Searched for regex `use_sde|gSDE|state.dependent`, 64 results
+
+Read [](file:///c%3A/ProgramData/anaconda3/envs/pytorch-gym/Lib/site-packages/stable_baselines3/common/distributions.py#421-421), lines 421 to 671
+
+# `StateDependentNoiseDistribution` 详解
+
+## 一、概述与核心区别
+
+### 1. 两种分布的对比
+
+| 特性 | `DiagGaussianDistribution` | `StateDependentNoiseDistribution` |
+|------|--------------------------------|--------------------------------------|
+| **噪声类型** | **独立随机噪声** | **状态依赖噪声（gSDE）** |
+| **探索方式** | 每次采样完全随机 | 噪声依赖于当前状态特征 |
+| **噪声一致性** | 无相关性 | 在相似状态下产生相似噪声 |
+| **适用场景** | 标准探索 | 需要时间相关探索的复杂任务 |
+| **参数数量** | 较少（`n_actions` 个 log_std） | 较多（`n_features × n_actions` 个权重） |
+| **论文出处** | 标准方法 | [gSDE: Generalized State-Dependent Exploration](https://arxiv.org/abs/2005.05719) |
+
+### 2. 核心思想
+
+**传统方法（DiagGaussianDistribution）**：
+```python
+# 采样噪声：完全随机，与状态无关
+ε ~ N(0, σ²)
+action = μ(s) + ε
+
+# 问题：噪声在时间上不连续，可能导致：
+# 1. 探索效率低
+# 2. 在相似状态下行为不一致
+```
+
+**gSDE 方法（StateDependentNoiseDistribution）**：
+```python
+# 采样噪声：依赖于状态特征
+ε(s) = f(s) * W  # W 是学习的噪声权重矩阵
+action = μ(s) + ε(s)
+
+# 优势：
+# 1. 相似状态产生相似噪声
+# 2. 探索更连贯、高效
+# 3. 适合需要时间一致性的任务
+```
+
+## 二、`StateDependentNoiseDistribution` 的实现
+
+### 1. 类定义与初始化
+
+查看 `distributions.py:421-460`：
+
+````python
+class StateDependentNoiseDistribution(Distribution):
+    """
+    使用广义状态依赖探索（gSDE）的分布类
+    论文：https://arxiv.org/abs/2005.05719
+    
+    用于创建噪声探索矩阵并计算带噪声动作的对数概率
+    
+    参数:
+        action_dim: 动作空间维度
+        full_std: 是否使用完整标准差矩阵（n_features × n_actions）
+                 而不是简化版本（n_features,）
+        use_expln: 使用 expln() 函数而不是 exp() 来保证正标准差
+        squash_output: 是否使用 tanh 函数压缩输出到有界范围
+        learn_features: 是否学习 gSDE 的特征（允许梯度通过 latent_sde）
+        epsilon: 避免数值不精确导致 NaN 的小值
+    """
+    
+    def __init__(
+        self,
+        action_dim: int,
+        full_std: bool = True,      # 是否使用完整方差矩阵
+        use_expln: bool = False,    # 是否使用 expln 函数
+        squash_output: bool = False,# 是否压缩输出
+        learn_features: bool = False,# 是否学习特征
+        epsilon: float = 1e-6,      # 数值稳定性小量
+    ):
+        super().__init__()
+        self.action_dim = action_dim
+        self.latent_sde_dim = None  # 特征维度（后续设置）
+        self.mean_actions = None
+        self.log_std = None
+        self.use_expln = use_expln
+        self.full_std = full_std
+        self.epsilon = epsilon
+        self.learn_features = learn_features
+        
+        # 是否使用 Tanh 挤压
+        if squash_output:
+            self.bijector = TanhBijector(epsilon)
+        else:
+            self.bijector = None
+````
+
+### 2. 关键方法：`proba_distribution_net()`
+
+创建网络层和参数（查看 `distributions.py:514-539`）：
+
+````python
+def proba_distribution_net(
+    self, 
+    latent_dim: int,                      # 策略网络输出维度
+    log_std_init: float = -2.0,          # 对数标准差初始值
+    latent_sde_dim: Optional[int] = None # gSDE 特征维度
+) -> Tuple[nn.Module, nn.Parameter]:
+    """
+    创建表示分布的层和参数：
+    - 一个输出层产生确定性动作（均值）
+    - 另一个参数控制噪声矩阵的权重标准差
+    
+    参数:
+        latent_dim: 策略网络最后一层维度
+        log_std_init: 对数标准差的初始值
+        latent_sde_dim: 用于 gSDE 的特征提取器最后一层维度
+                       默认与策略网络共享
+    
+    返回:
+        (mean_actions_net, log_std): 元组
+    """
+    # ========== 1. 创建均值输出层（与标准方法相同）==========
+    mean_actions_net = nn.Linear(latent_dim, self.action_dim)
+    
+    # ========== 2. 设置 gSDE 特征维度 ==========
+    # 当学习噪声特征时，特征维度可以与策略网络不同
+    self.latent_sde_dim = latent_dim if latent_sde_dim is None else latent_sde_dim
+    
+    # ========== 3. 创建对数标准差参数 ==========
+    if self.full_std:
+        # 完整方差矩阵：每个特征-动作对都有独立的 std
+        log_std = th.ones(self.latent_sde_dim, self.action_dim)
+    else:
+        # 简化版本：所有动作共享同一组特征权重
+        log_std = th.ones(self.latent_sde_dim, 1)
+    
+    # 转换为可学习参数
+    log_std = nn.Parameter(log_std * log_std_init, requires_grad=True)
+    
+    # ========== 4. 采样初始噪声矩阵 ==========
+    self.sample_weights(log_std)
+    
+    return mean_actions_net, log_std
+````
+
+**关键区别**：
+
+````python
+# DiagGaussianDistribution
+log_std = nn.Parameter(torch.ones(action_dim) * log_std_init)
+# 形状: [action_dim]，如 [3] 对于 3 维动作
+
+# StateDependentNoiseDistribution
+log_std = nn.Parameter(torch.ones(latent_sde_dim, action_dim) * log_std_init)
+# 形状: [latent_sde_dim, action_dim]，如 [64, 3]
+# 参数数量：64 × 3 = 192（远多于 3）
+````
+
+### 3. 核心方法：`sample_weights()`
+
+采样噪声权重矩阵（查看 `distributions.py:500-512`）：
+
+````python
+def sample_weights(self, log_std: th.Tensor, batch_size: int = 1) -> None:
+    """
+    为噪声探索矩阵采样权重，使用中心化的高斯分布
+    
+    参数:
+        log_std: 对数标准差参数 [latent_sde_dim, action_dim]
+        batch_size: 批次大小（用于并行探索）
+    """
+    # ========== 1. 计算标准差 ==========
+    std = self.get_std(log_std)  # [latent_sde_dim, action_dim]
+    
+    # ========== 2. 创建高斯分布 ==========
+    # 均值为 0，标准差为 std
+    self.weights_dist = Normal(th.zeros_like(std), std)
+    
+    # ========== 3. 采样噪声矩阵（重参数化技巧）==========
+    # 单个探索矩阵（用于串行环境）
+    self.exploration_mat = self.weights_dist.rsample()
+    # 形状: [latent_sde_dim, action_dim]
+    
+    # 批量探索矩阵（用于并行环境）
+    self.exploration_matrices = self.weights_dist.rsample((batch_size,))
+    # 形状: [batch_size, latent_sde_dim, action_dim]
+````
+
+**示例**：
+
+````python
+# 假设：
+latent_sde_dim = 64
+action_dim = 3
+batch_size = 8
+
+# 采样结果：
+exploration_mat.shape = [64, 3]       # 单个环境的噪声权重
+exploration_matrices.shape = [8, 64, 3]  # 8个环境的噪声权重
+
+# 每个环境有独立的噪声矩阵
+````
+
+### 4. 关键方法：`proba_distribution()`
+
+创建带噪声的高斯分布（查看 `distributions.py:541-558`）：
+
+````python
+def proba_distribution(
+    self, 
+    mean_actions: th.Tensor,  # 动作均值 [batch, action_dim]
+    log_std: th.Tensor,       # 对数标准差 [latent_sde_dim, action_dim]
+    latent_sde: th.Tensor     # 状态特征 [batch, latent_sde_dim] ← 关键！
+) -> SelfStateDependentNoiseDistribution:
+    """
+    根据参数（均值、标准差、状态特征）创建分布
+    
+    参数:
+        mean_actions: 动作均值
+        log_std: 对数标准差
+        latent_sde: 状态依赖的特征向量 ← gSDE 独有参数
+    """
+    # ========== 1. 是否学习特征（梯度控制）==========
+    if self.learn_features:
+        self._latent_sde = latent_sde  # 梯度流通
+    else:
+        self._latent_sde = latent_sde.detach()  # 阻止梯度
+    
+    # ========== 2. 计算状态依赖的方差 ==========
+    # variance = (latent_sde)² @ (std)²
+    # 形状推导：
+    # latent_sde²: [batch, latent_sde_dim]
+    # std²: [latent_sde_dim, action_dim]
+    # 结果: [batch, action_dim]
+    variance = th.mm(
+        self._latent_sde ** 2,           # 状态特征的平方
+        self.get_std(log_std) ** 2       # 标准差的平方
+    )
+    
+    # ========== 3. 创建高斯分布 ==========
+    # 均值：mean_actions
+    # 标准差：sqrt(variance)
+    self.distribution = Normal(
+        mean_actions, 
+        th.sqrt(variance + self.epsilon)  # 加 epsilon 避免数值问题
+    )
+    
+    return self
+````
+
+**关键公式**：
+
+````python
+# 方差的计算（状态依赖）
+variance[i, j] = Σₖ (latent_sde[i, k]² * std[k, j]²)
+
+# 这意味着：
+# - 不同状态特征（latent_sde）产生不同的方差
+# - 相似的状态特征产生相似的方差
+# - 因此噪声在相似状态下具有一致性
+````
+
+### 5. 采样动作：`get_noise()`
+
+生成状态依赖的噪声（查看 `distributions.py:600-613`）：
+
+````python
+def get_noise(self, latent_sde: th.Tensor) -> th.Tensor:
+    """
+    生成状态依赖的噪声
+    
+    参数:
+        latent_sde: 状态特征 [batch, latent_sde_dim]
+    
+    返回:
+        噪声向量 [batch, action_dim]
+    """
+    # 是否学习特征
+    latent_sde = latent_sde if self.learn_features else latent_sde.detach()
+    
+    # ========== 情况1：单个环境或探索矩阵数量不匹配 ==========
+    if len(latent_sde) == 1 or len(latent_sde) != len(self.exploration_matrices):
+        # 使用矩阵乘法：latent_sde @ exploration_mat
+        # [batch, latent_sde_dim] @ [latent_sde_dim, action_dim]
+        # = [batch, action_dim]
+        return th.mm(latent_sde, self.exploration_mat)
+    
+    # ========== 情况2：批量环境 ==========
+    # 使用批量矩阵乘法提高效率
+    # [batch, 1, latent_sde_dim]
+    latent_sde = latent_sde.unsqueeze(dim=1)
+    
+    # [batch, 1, latent_sde_dim] @ [batch, latent_sde_dim, action_dim]
+    # = [batch, 1, action_dim]
+    noise = th.bmm(latent_sde, self.exploration_matrices)
+    
+    # 移除多余维度：[batch, action_dim]
+    return noise.squeeze(dim=1)
+
+def sample(self) -> th.Tensor:
+    """采样动作"""
+    # 生成噪声
+    noise = self.get_noise(self._latent_sde)
+    
+    # 均值 + 噪声
+    actions = self.distribution.mean + noise
+    
+    # 如果需要，应用 tanh 压缩
+    if self.bijector is not None:
+        return self.bijector.forward(actions)
+    return actions
+````
+
+**关键计算**：
+
+````python
+# 噪声的生成（状态依赖）
+noise = latent_sde @ exploration_mat
+
+# 示例：
+latent_sde = [[0.5, -0.2, 0.8, ...]]  # [1, 64]
+exploration_mat = [[0.1, 0.3, -0.2],
+                   [0.4, -0.1, 0.5],
+                   ...]                # [64, 3]
+
+noise = [[0.5*0.1 + (-0.2)*0.4 + 0.8*... + ...,  # 第1个动作的噪声
+          0.5*0.3 + (-0.2)*(-0.1) + 0.8*... + ...,  # 第2个动作的噪声
+          0.5*(-0.2) + (-0.2)*0.5 + 0.8*... + ...]]  # 第3个动作的噪声
+
+# 关键：噪声依赖于 latent_sde（状态特征）
+````
+
+## 三、与 `DiagGaussianDistribution` 的详细对比
+
+### 1. 参数数量对比
+
+````python
+# ========== DiagGaussianDistribution ==========
+# 假设 action_dim = 3
+log_std = nn.Parameter(torch.ones(3) * 0.0)
+# 参数数量: 3
+
+# ========== StateDependentNoiseDistribution ==========
+# 假设 latent_sde_dim = 64, action_dim = 3
+log_std = nn.Parameter(torch.ones(64, 3) * -2.0)
+# 参数数量: 64 × 3 = 192
+
+# gSDE 的参数数量 = latent_sde_dim × action_dim
+# 远多于标准方法的 action_dim
+````
+
+### 2. 采样过程对比
+
+#### 标准方法（`DiagGaussianDistribution`）
+
+````python
+# 前向传播
+latent_pi = mlp_extractor.forward_actor_con(features)  # [batch, 64]
+mean = action_net_con(latent_pi)                       # [batch, 3]
+std = torch.exp(log_std)                               # [3]
+
+# 创建分布（状态无关）
+distribution = Normal(mean, std)
+
+# 采样（完全随机）
+ε ~ N(0, 1)  # [batch, 3]，每次完全随机
+action = mean + std * ε
+
+# 示例（两个相似的状态）
+state_1 = [0.5, -0.3, ...]  # 状态1
+mean_1 = [0.8, -0.2, 0.5]
+ε_1 = [0.3, -0.9, 0.4]  # 随机噪声
+action_1 = [0.95, -0.65, 0.7]
+
+state_2 = [0.5, -0.3, ...]  # 状态2（与状态1相似）
+mean_2 = [0.8, -0.2, 0.5]
+ε_2 = [-0.8, 0.6, -0.3]  # 完全不同的随机噪声！
+action_2 = [0.32, 0.34, 0.05]  # 动作差异很大
+````
+
+**问题**：相似状态产生完全不同的动作（因为噪声完全随机）
+
+#### gSDE 方法（`StateDependentNoiseDistribution`）
+
+````python
+# 前向传播
+latent_pi = mlp_extractor.forward_actor_con(features)  # [batch, 64]
+mean = action_net_con(latent_pi)                       # [batch, 3]
+
+# 创建分布（状态依赖）
+distribution = action_dist_con.proba_distribution(
+    mean, 
+    log_std,     # [64, 3]
+    latent_pi    # [batch, 64] ← 状态特征
+)
+
+# 采样（状态依赖）
+noise = latent_pi @ exploration_mat  # [batch, 64] @ [64, 3] = [batch, 3]
+action = mean + noise
+
+# 示例（两个相似的状态）
+state_1 = [0.5, -0.3, ...]
+latent_1 = [0.4, -0.2, 0.7, ...]  # 状态1的特征
+mean_1 = [0.8, -0.2, 0.5]
+noise_1 = latent_1 @ exploration_mat = [0.3, -0.1, 0.2]
+action_1 = [1.1, -0.3, 0.7]
+
+state_2 = [0.5, -0.3, ...]
+latent_2 = [0.4, -0.2, 0.7, ...]  # 状态2的特征（相似）
+mean_2 = [0.8, -0.2, 0.5]
+noise_2 = latent_2 @ exploration_mat = [0.3, -0.1, 0.2]  # 噪声相似！
+action_2 = [1.1, -0.3, 0.7]  # 动作一致
+````
+
+**优势**：相似状态产生相似噪声和动作（探索更连贯）
+
+### 3. 方差计算对比
+
+#### 标准方法
+
+````python
+# 方差与状态无关（固定值）
+variance = std²  # [3]
+
+# 所有状态共享相同的方差
+````
+
+#### gSDE 方法
+
+````python
+# 方差依赖于状态特征
+variance = (latent_sde)² @ (std)²
+# [batch, 64] @ [64, 3] = [batch, 3]
+
+# 不同状态有不同的方差
+# 示例：
+latent_1 = [0.5, -0.2, 0.8, ...]
+variance_1 = [0.25, 0.04, 0.64, ...] @ std² = [0.3, 0.5, 0.4]
+
+latent_2 = [1.2, -0.8, 0.3, ...]
+variance_2 = [1.44, 0.64, 0.09, ...] @ std² = [0.8, 0.9, 0.2]
+
+# 不同状态的探索程度不同
+````
+
+## 四、在项目中的使用
+
+### 1. 启用 gSDE
+
+在 `hy_policies.py:400-408` 中：
+
+````python
+def __init__(self, ..., use_sde: bool = False, ...):
+    # ...
+    
+    # 如果启用 gSDE
+    if use_sde:
+        dist_kwargs = {
+            "full_std": full_std,        # 是否使用完整方差矩阵
+            "squash_output": squash_output,  # 是否压缩输出
+            "use_expln": use_expln,      # 是否使用 expln 函数
+            "learn_features": False,     # 是否学习特征（通常为 False）
+        }
+    
+    self.use_sde = use_sde
+    self.dist_kwargs = dist_kwargs
+    
+    # 创建分布对象
+    self.action_dist_con = make_proba_distribution(
+        self.action_space_con, 
+        use_sde=use_sde,         # ← 传递 use_sde 参数
+        dist_kwargs=dist_kwargs
+    )
+````
+
+### 2. 创建分布时传入 `latent_pi`
+
+在 `hy_policies.py:572-580` 中：
+
+````python
+def _get_action_dist_from_latent_con(self, latent_pi: th.Tensor) -> Distribution:
+    # 计算均值
+    mean_actions = self.action_net_con(latent_pi)
+    
+    # ========== 根据分布类型选择方法 ==========
+    if isinstance(self.action_dist_con, DiagGaussianDistribution):
+        # 标准方法：只需要均值和 log_std
+        return self.action_dist_con.proba_distribution(mean_actions, self.log_std)
+    
+    elif isinstance(self.action_dist_con, StateDependentNoiseDistribution):
+        # gSDE 方法：需要额外的 latent_pi（状态特征）
+        return self.action_dist_con.proba_distribution(
+            mean_actions, 
+            self.log_std, 
+            latent_pi  # ← 必须传入状态特征
+        )
+    
+    else:
+        raise ValueError("Invalid action distribution")
+````
+
+### 3. 定期重采样噪声矩阵
+
+在 `hy_on_policy_algo.py:125-127` 中：
+
+````python
+def collect_rollouts(self, env, callback, rollout_buffer, n_rollout_steps):
+    # ...
+    while n_steps < n_rollout_steps:
+        # ========== 定期重采样噪声（gSDE）==========
+        if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+            # 重新采样噪声矩阵
+            # 这样可以在训练过程中改变探索方向
+            self.policy.reset_noise(env.num_envs)
+        
+        # 采样动作
+        with th.no_grad():
+            actions_disc, actions_con, values, log_probs_disc, log_probs_con = \
+                self.policy.forward(obs_, deterministic=False)
+        
+        # ...
+````
+
+### 4. `reset_noise()` 方法
+
+在 `hy_policies.py:645-646` 中：
+
+````python
+def reset_noise(self, n_envs: int = 1) -> None:
+    """重新采样噪声矩阵（仅 gSDE 可用）"""
+    assert isinstance(self.action_dist_con, StateDependentNoiseDistribution), \
+        "reset_noise() is only available when using gSDE"
+    
+    # 重新采样权重矩阵
+    self.action_dist_con.sample_weights(self.log_std, batch_size=n_envs)
+````
+
+## 五、使用示例
+
+### 示例 1：启用 gSDE 训练
+
+````python
+from hy_ppo import HyPPO
+
+# ========== 创建模型（启用 gSDE）==========
+model = HyPPO(
+    "MlpPolicy",
+    env,
+    use_sde=True,           # ← 启用 gSDE
+    sde_sample_freq=4,      # 每 4 步重采样噪声
+    policy_kwargs=dict(
+        log_std_init=-2.0,  # 初始对数标准差（较小，探索适中）
+        full_std=True,      # 使用完整方差矩阵
+        use_expln=False,    # 使用标准 exp 函数
+    ),
+    verbose=1
+)
+
+# 训练
+model.learn(total_timesteps=100000)
+````
+
+### 示例 2：对比两种方法
+
+````python
+import torch
+
+# ========== 标准方法（DiagGaussianDistribution）==========
+# 创建分布
+action_dist_standard = make_proba_distribution(
+    action_space_con, 
+    use_sde=False
+)
+
+# 创建网络
+action_net, log_std = action_dist_standard.proba_distribution_net(
+    latent_dim=64, 
+    log_std_init=0.0
+)
+
+# 前向传播
+latent = torch.randn(32, 64)
+mean = action_net(latent)  # [32, 3]
+std = torch.exp(log_std)   # [3]
+
+# 创建分布（状态无关）
+distribution = action_dist_standard.proba_distribution(mean, log_std)
+
+# 采样
+actions_standard = distribution.sample()
+print(f"标准方法参数数量: {log_std.numel()}")  # 输出: 3
+
+
+# ========== gSDE 方法（StateDependentNoiseDistribution）==========
+# 创建分布
+action_dist_gsde = make_proba_distribution(
+    action_space_con, 
+    use_sde=True,
+    dist_kwargs=dict(full_std=True)
+)
+
+# 创建网络
+action_net, log_std = action_dist_gsde.proba_distribution_net(
+    latent_dim=64, 
+    log_std_init=-2.0
+)
+
+# 前向传播
+latent = torch.randn(32, 64)
+mean = action_net(latent)  # [32, 3]
+
+# 创建分布（状态依赖）
+distribution = action_dist_gsde.proba_distribution(
+    mean, 
+    log_std, 
+    latent  # ← 必须传入状态特征
+)
+
+# 采样
+actions_gsde = distribution.sample()
+print(f"gSDE 方法参数数量: {log_std.numel()}")  # 输出: 192 (64 × 3)
+````
+
+### 示例 3：可视化噪声一致性
+
+````python
+import matplotlib.pyplot as plt
+import torch
+
+# 模拟相似状态
+state_1 = torch.randn(1, 64)
+state_2 = state_1 + torch.randn(1, 64) * 0.1  # 添加小扰动
+
+# ========== 标准方法：噪声完全随机 ==========
+distribution_standard = action_dist_standard.proba_distribution(
+    mean=action_net(state_1), 
+    log_std=log_std
+)
+
+actions_1_standard = []
+actions_2_standard = []
+for _ in range(100):
+    actions_1_standard.append(distribution_standard.sample().numpy())
+    
+    distribution_standard = action_dist_standard.proba_distribution(
+        mean=action_net(state_2), 
+        log_std=log_std
+    )
+    actions_2_standard.append(distribution_standard.sample().numpy())
+
+# ========== gSDE 方法：噪声一致 ==========
+distribution_gsde_1 = action_dist_gsde.proba_distribution(
+    mean=action_net(state_1), 
+    log_std=log_std, 
+    latent_sde=state_1
+)
+distribution_gsde_2 = action_dist_gsde.proba_distribution(
+    mean=action_net(state_2), 
+    log_std=log_std, 
+    latent_sde=state_2
+)
+
+actions_1_gsde = []
+actions_2_gsde = []
+for _ in range(100):
+    actions_1_gsde.append(distribution_gsde_1.sample().numpy())
+    actions_2_gsde.append(distribution_gsde_2.sample().numpy())
+
+# 绘图对比
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# 标准方法
+axes[0].scatter([a[0][0] for a in actions_1_standard], 
+                [a[0][0] for a in actions_2_standard], alpha=0.5)
+axes[0].set_title('标准方法（噪声完全随机）')
+axes[0].set_xlabel('状态1的动作')
+axes[0].set_ylabel('状态2的动作')
+
+# gSDE 方法
+axes[1].scatter([a[0][0] for a in actions_1_gsde], 
+                [a[0][0] for a in actions_2_gsde], alpha=0.5)
+axes[1].set_title('gSDE 方法（噪声一致）')
+axes[1].set_xlabel('状态1的动作')
+axes[1].set_ylabel('状态2的动作')
+
+plt.tight_layout()
+plt.show()
+
+# 结果：gSDE 的散点图更接近对角线（噪声相似）
+````
+
+## 六、适用场景
+
+### 适合使用 gSDE 的情况
+
+1. **需要时间一致性的任务**
+   - 机器人控制（相似姿态应产生相似动作）
+   - 导航任务（相似位置应产生相似移动方向）
+
+2. **高维连续动作空间**
+   - 多关节机器人控制
+   - 复杂操作任务
+
+3. **探索效率要求高**
+   - 样本效率敏感的任务
+   - 训练时间有限的场景
+
+4. **状态空间平滑**
+   - 相似状态有相似最优动作
+   - 状态转移连续
+
+### 不适合使用 gSDE 的情况
+
+1. **离散动作空间**
+   - gSDE 仅支持连续动作
+
+2. **简单任务**
+   - 标准探索已经足够
+   - 不值得增加参数复杂度
+
+3. **状态空间不连续**
+   - 相似状态可能需要完全不同的动作
+   - 状态特征不可靠
+
+4. **计算资源有限**
+   - gSDE 参数数量更多
+   - 计算开销略高
+
+## 七、调试技巧
+
+### 1. 检查是否正确启用
+
+````python
+def _get_action_dist_from_latent_con(self, latent_pi):
+    mean_actions = self.action_net_con(latent_pi)
+    
+    # ========== 调试信息 ==========
+    print(f"使用的分布类型: {type(self.action_dist_con).__name__}")
+    if isinstance(self.action_dist_con, StateDependentNoiseDistribution):
+        print("✓ gSDE 已启用")
+        print(f"log_std 形状: {self.log_std.shape}")  # 应该是 [latent_dim, action_dim]
+    else:
+        print("× 使用标准方法")
+        print(f"log_std 形状: {self.log_std.shape}")  # 应该是 [action_dim]
+    
+    # ...
+````
+
+### 2. 监控噪声矩阵
+
+````python
+def reset_noise(self, n_envs):
+    self.action_dist_con.sample_weights(self.log_std, batch_size=n_envs)
+    
+    # ========== 调试信息 ==========
+    print("=== 噪声矩阵统计 ===")
+    print(f"exploration_mat 形状: {self.action_dist_con.exploration_mat.shape}")
+    print(f"exploration_mat 均值: {self.action_dist_con.exploration_mat.mean().item():.4f}")
+    print(f"exploration_mat 标准差: {self.action_dist_con.exploration_mat.std().item():.4f}")
+````
+
+### 3. 比较不同方法的探索
+
+````python
+# 记录动作分布
+actions_standard = []
+actions_gsde = []
+
+for episode in range(10):
+    obs = env.reset()
+    done = False
+    while not done:
+        action_standard = model_standard.predict(obs)[0]
+        action_gsde = model_gsde.predict(obs)[0]
+        
+        actions_standard.append(action_standard)
+        actions_gsde.append(action_gsde)
+        
+        obs, _, done, _ = env.step(action_standard)
+
+# 可视化
+plt.figure(figsize=(12, 5))
+plt.subplot(1, 2, 1)
+plt.hist([a[0] for a in actions_standard], bins=30, alpha=0.5, label='标准')
+plt.title('标准方法动作分布')
+
+plt.subplot(1, 2, 2)
+plt.hist([a[0] for a in actions_gsde], bins=30, alpha=0.5, label='gSDE')
+plt.title('gSDE 动作分布')
+
+plt.show()
+````
+
+## 八、总结
+
+### 核心区别
+
+| 方面 | `DiagGaussianDistribution` | `StateDependentNoiseDistribution` |
+|------|---------------------------|----------------------------------|
+| **噪声生成** | `ε ~ N(0, σ²)`（完全随机） | `ε = f(s) @ W`（状态依赖） |
+| **探索一致性** | 无一致性 | 相似状态产生相似噪声 |
+| **参数数量** | `action_dim` | `latent_dim × action_dim` |
+| **计算复杂度** | 低 | 中等 |
+| **适用场景** | 通用任务 | 需要时间一致性的任务 |
+| **论文出处** | 标准方法 | [gSDE 论文](https://arxiv.org/abs/2005.05719) |
+
+### 关键公式
+
+````python
+# 标准方法
+action = μ(s) + σ * ε,  其中 ε ~ N(0, 1)
+
+# gSDE 方法
+action = μ(s) + f(s) @ W,  其中 W ~ N(0, Σ)
+noise = f(s) @ W  ← 状态依赖噪声
+
+# 方差计算
+variance(s) = (f(s))² @ (σ)²  ← 状态依赖方差
+````
+
+### 使用建议
+
+1. **默认使用标准方法**（`use_sde=False`）
+2. **以下情况尝试 gSDE**：
+   - 连续动作任务
+   - 需要探索一致性
+   - 标准方法收敛困难
+   - 样本效率要求高
+
+3. **超参数调整**：
+   - `log_std_init=-2.0`（初始探索适中）
+   - `sde_sample_freq=4`（每 4 步重采样）
+   - `full_std=True`（完整方差矩阵）
+
+4. **注意事项**：
+   - 仅支持连续动作
+   - 参数数量更多
+   - 需要传入 `latent_pi`
+
+理解 `StateDependentNoiseDistribution` 的核心是掌握**状态依赖噪声**的概念，这使得探索在时间上更加连贯，适合需要平滑探索的复杂任务。
