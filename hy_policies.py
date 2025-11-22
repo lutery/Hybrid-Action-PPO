@@ -619,17 +619,41 @@ class HyActorCriticPolicy(HyBasePolicy):
         return distribution_disc.get_actions(deterministic=deterministic), distribution_con.get_actions(deterministic=deterministic)
 
     def evaluate_actions(self, obs: th.Tensor, actions_disc: th.Tensor, actions_con:th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, Optional[th.Tensor], Optional[th.Tensor]]:
+        '''
+        todo
+
+        obs: 观察   
+        actions_disc: 离散动作
+        actions_con: 连续动作
+
+        返回obs对应的预测价值，真实离散动作对应的预测对数概率，真实连续动作对应的对数概率，预测的离散动作的熵，预测的连续动作的熵
+        '''
+        
+        # 提取特征
         features = self.extract_features(obs)
+        # 价值嵌入
         latent_vf = self.mlp_extractor.forward_critic(features)
+        # 分离特征，防止梯度传播到特征提取器，这样特征提取器只有价值特征才会去更新，避免多个不同维度的特征去更新相同的权重
+        # 导致的特征混乱
         detached_f = features.detach()
+        # 提取离散动作和连续动作的嵌入
         latent_pi_disc = self.mlp_extractor.forward_actor_disc(detached_f)
         latent_pi_con = self.mlp_extractor.forward_actor_con(detached_f)
+        # 根据预测的离散动作嵌入获取一个离散动作的分布采样器（实际上就是将预测的对数概率封装起来）
         distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+        # 根据实际执行的动作获取该动作对应的对数概率，即用索引获取对应动作的对数概率
         log_prob_disc = distribution_disc.log_prob(actions_disc)
+        # 利用动作的对数概率计算熵
         entropy_disc = distribution_disc.entropy()
+        
+        # 同样的，用连续动作的嵌入计算连续动作的分布采样器（正太分布）
         distribution_con = self._get_action_dist_from_latent_con(latent_pi_con)
+        # 根据实际执行的动作获取对应的动作对数概率
         log_prob_con = distribution_con.log_prob(actions_con)
+        # 计算对数概率的熵
         entropy_con = distribution_con.entropy()
+
+        # 预测观察价值
         values = self.value_net(latent_vf)
         return values, log_prob_disc, log_prob_con, entropy_disc, entropy_con
 
@@ -646,8 +670,10 @@ class HyActorCriticPolicy(HyBasePolicy):
 
 
     def reset_noise(self, n_envs: int = 1) -> None:
+        # 限制重置噪音仅适用于StateDependentNoiseDistribution的动作分布，即在连续动作的使用了gSDE时
         assert isinstance(self.action_dist_con, StateDependentNoiseDistribution), "reset_noise() is only available when using gSDE"
-        self.action_dist_con.sample_weights(self.log_std, batch_size=n_envs)
+        # 采样动作噪音的权重
+        self.action_dist_con.sample_weights(self.log_std, batch_size=n_envs) 
 
 class HyActorCriticCnnPolicy(HyActorCriticPolicy):
 

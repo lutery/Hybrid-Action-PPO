@@ -46,6 +46,7 @@ def get_action_dim(action_space: spaces.Space) -> tuple:
         raise NotImplementedError(f"{action_space} action space is not supported")
 
 
+# 用来存储每次采样的数据
 class HYRolloutBufferSamples(NamedTuple):
     observations: th.Tensor
     actions_con: th.Tensor
@@ -179,10 +180,17 @@ class HYRolloutBuffer(BaseBuffer):
         return np.mean(obs), np.std(obs)
 
     def get(self, batch_size: Optional[int] = None) -> Generator[HYRolloutBufferSamples, None, None]:
+        '''
+        获取指定batch_size的小批量数据生成器，如果batch_size为None则返回整个缓存区的数据
+        '''
         assert self.full, ""
+        # self.buffer_size * self.n_envs：总的数据量
+        # 打乱数据的索引顺序，以便后续随机采样
+        # ppo训练并非要排序好的数据，而是要打乱的数据，而之前之所以要排序好，主要是为了计算return 和 advantage
         indices = np.random.permutation(self.buffer_size * self.n_envs)
-        # Prepare the data
+        # Prepare the data # 🔑 关键：准备数据（只在第一次调用时执行）,除非reset
         if not self.generator_ready:
+            # 准备好缓冲区的缓存key对应的数据，将其从三维张量重塑为二维张量
             _tensor_names = [
                 "observations",
                 "actions_con",
@@ -194,15 +202,20 @@ class HYRolloutBuffer(BaseBuffer):
                 "returns",
             ]
             for tensor in _tensor_names:
+                # 准备训练数据时，将缓冲区数据从三维张量重塑为二维张量，以便后续的批量采样和训练
+                # 具体做法是先交换前两个维度，然后将前两个维度展平为一个维度
+                # 这样做的目的是将不同环境和时间步的数据混合在一起，方便后续的随机采样 todo 实际调试时验证一下是否如此
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
             self.generator_ready = True
 
-        # Return everything, don't create minibatches
+        # Return everything, don't create minibatches 如果没有指定batch_size，则返回整个缓存区的数据
         if batch_size is None:
             batch_size = self.buffer_size * self.n_envs
 
-        start_idx = 0
-        while start_idx < self.buffer_size * self.n_envs:
+        start_idx = 0 # 起始索引
+        while start_idx < self.buffer_size * self.n_envs: # 遍历整个缓存区的数据
+            # 采用yield每次返回一个小批量的数据
+            # indices[start_idx : start_idx + batch_size]：直接从打乱的索引中获取当前批次的索引
             yield self._get_samples(indices[start_idx : start_idx + batch_size])
             start_idx += batch_size
 
@@ -211,6 +224,9 @@ class HYRolloutBuffer(BaseBuffer):
         batch_inds: np.ndarray,
         env: Optional[VecNormalize] = None,
     ) -> HYRolloutBufferSamples:  # type: ignore[signature-mismatch] #FIXME
+        '''
+        根据给定的索引获取对应的小批量数据
+        '''
         data = (
             self.observations[batch_inds],
             self.actions_con[batch_inds],
@@ -221,4 +237,6 @@ class HYRolloutBuffer(BaseBuffer):
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
         )
+        # map(self.to_torch, data): 将数据转换为张量
+        # *tuple： 将元组解包为位置参数传递给HYRolloutBufferSamples
         return HYRolloutBufferSamples(*tuple(map(self.to_torch, data)))

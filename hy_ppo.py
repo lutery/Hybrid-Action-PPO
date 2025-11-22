@@ -33,9 +33,9 @@ class HyPPO(HyOnPolicyAlgorithm):
         clip_range: Union[float, Schedule] = 0.2, # PPO裁剪范围
         clip_range_vf: Union[None, float, Schedule] = None, # 价值函数裁剪范围 todo
         normalize_advantage: bool = True, # todo
-        ent_coef_con: float = 0.0, # todo
-        ent_coef_disc: float = 0.0, # todo
-        vf_coef: float = 0.5, # todo
+        ent_coef_con: float = 0.0, # 同ent_coef_disc
+        ent_coef_disc: float = 0.0, # 在计算损失时，熵损失的系数，用于控制器大小，防止熵损失过于主导导致动作不收敛
+        vf_coef: float = 0.5, # 价值损失的权重，用于平衡不同损失之间的差异，防止整体网络受一种损失影响过大
         max_grad_norm: float = 0.5, # 梯度裁剪
         use_sde: bool = False, # 是否使用连续噪音用于平滑探索
         sde_sample_freq: int = -1, # todo
@@ -137,19 +137,22 @@ class HyPPO(HyOnPolicyAlgorithm):
         self.policy.set_training_mode(True)
         # Update optimizer learning rate
         # self._update_learning_rate(self.policy.optimizer)
+        # 更新设置学习率
         self._update_learning_rate(self.policy.value_optimizer)
         self._update_learning_rate(self.policy.disc_optimizer)
         self._update_learning_rate(self.policy.con_optimizer)
-        # Compute current clip range
+        # Compute current clip range 根据训练进度，或者本次训练过程中PPO的裁剪范围
         clip_range = self.clip_range(self._current_progress_remaining)  # type: ignore[operator]
-        # Optional: clip range for the value function
+        # Optional: clip range for the value function 如果有限制价值函数的裁剪范围，则更新价值函数的裁剪范围
         if self.clip_range_vf is not None:
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)  # type: ignore[operator]
-
+        
+        # todo 
         entropy_losses_disc, entropy_losses_con = [], []
         pg_losses_disc, pg_losses_con, value_losses = [], [], []
         clip_fractions_disc, clip_fractions_con = [], []
 
+        # 没啥大作用，还以为是能够检测ppo训练过程中新旧策略的差异，从而决定是否提前停止训练
         continue_training = True
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
@@ -160,6 +163,9 @@ class HyPPO(HyOnPolicyAlgorithm):
                 actions_disc = rollout_data.actions_disc.long().flatten()
                 actions_con = rollout_data.actions_con
 
+                # 如果使用了连续动作的连续噪音，那么每次小批量训练前都需要重置一下SDE噪音
+                # 之前使用连续噪音主要是为了防止因为噪音动作无关导致动作抖动，与环境交互产生不连贯的较大偏差
+                # 而在训练时就不需要了（具体看md），反而要频繁的切换噪音，让模型能够适合有更大的鲁棒性
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
@@ -169,9 +175,11 @@ class HyPPO(HyOnPolicyAlgorithm):
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
+                    # 归一化优势
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
+                # 与非混合动作不同，这里要分开计算连续动作和离散动作新旧的比率，对数可以改为-
                 ratio_disc = th.exp(log_prob_disc - rollout_data.old_log_probs_disc)
                 ratio_con = th.exp(log_prob_con - rollout_data.old_log_probs_con)
 
@@ -184,16 +192,17 @@ class HyPPO(HyOnPolicyAlgorithm):
                 policy_loss_2_con = advantages * th.clamp(ratio_con, 1 - clip_range, 1 + clip_range)
                 policy_loss_con = -th.min(policy_loss_1_con, policy_loss_2_con).mean()
 
-                # Logging
+                # Logging 以下仅用于打印日志
                 pg_losses_disc.append(policy_loss_disc.item())
                 clip_fraction_disc = th.mean((th.abs(ratio_disc - 1) > clip_range).float()).item()
                 clip_fractions_disc.append(clip_fraction_disc)
 
-                # Logging
+                # Logging 以下仅用于打印日志
                 pg_losses_con.append(policy_loss_con.item())
                 clip_fraction_con = th.mean((th.abs(ratio_con - 1) > clip_range).float()).item()
                 clip_fractions_con.append(clip_fraction_con)
-
+                
+                # 判断是否需要裁剪价值预测
                 if self.clip_range_vf is None:
                     # No clipping
                     values_pred = values
@@ -203,46 +212,54 @@ class HyPPO(HyOnPolicyAlgorithm):
                     values_pred = rollout_data.old_values + th.clamp(
                         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                     )
-                # Value loss using the TD(gae_lambda) target
+                # Value loss using the TD(gae_lambda) target 训练价值预测
                 value_loss = F.mse_loss(rollout_data.returns, values_pred)
                 value_losses.append(value_loss.item())
 
-                # Entropy loss favor exploration
+                # Entropy loss favor exploration 计算动作的熵
                 if entropy_disc is None:
                     # Approximate entropy when no analytical form
+                    # 当没有解析形式的熵时，使用近似熵 看md
                     entropy_loss_disc = -th.mean(-log_prob_disc)
                 else:
                     entropy_loss_disc = -th.mean(entropy_disc)
                     
                 if entropy_con is None:
                     # Approximate entropy when no analytical form
+                    # 当没有解析形式的熵时，使用近似熵
                     entropy_loss_con = -th.mean(-log_prob_con)
                 else:
                     entropy_loss_con = -th.mean(entropy_con)
 
-
+                # 存储动作的熵，用于打印日志
                 entropy_losses_disc.append(entropy_loss_disc.item())
                 entropy_losses_con.append(entropy_loss_con.item())
 
-                # loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                # loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss 
+                # 计算离散动作的损失并更新梯度
                 loss_disc = policy_loss_disc + self.ent_coef_disc * entropy_loss_disc 
                 self.policy.disc_optimizer.zero_grad()
                 loss_disc.backward()
                 th.nn.utils.clip_grad_norm_(self.policy.disc_parameters, self.max_grad_norm)
                 self.policy.disc_optimizer.step()
+
+                # 计算连续动作的损失并更新梯度
                 loss_con = policy_loss_con + self.ent_coef_con * entropy_loss_con
                 self.policy.con_optimizer.zero_grad()
                 loss_con.backward()
                 th.nn.utils.clip_grad_norm_(self.policy.con_parameters, self.max_grad_norm)
                 self.policy.con_optimizer.step()
-                    
+                
+                # 计算价值预测的损失并更新梯度
                 loss_value = self.vf_coef * value_loss 
                 self.policy.value_optimizer.zero_grad()
                 loss_value.backward()
                 th.nn.utils.clip_grad_norm_(self.policy.value_parameters, self.max_grad_norm)
                 self.policy.value_optimizer.step()
                 
+                # 以下仅打印日志
                 with th.no_grad():
+                    # 计算新旧动作的kl散度，用来跟踪在每次训练后新旧动作之间的差异，其实也可以用来判断是否需要中断训练
                     log_ratio_disc = log_prob_disc - rollout_data.old_log_probs_disc
                     approx_kl_div = th.mean((th.exp(log_ratio_disc) - 1) - log_ratio_disc).cpu().numpy()
                     approx_kl_divs_disc.append(approx_kl_div)
@@ -260,10 +277,11 @@ class HyPPO(HyOnPolicyAlgorithm):
             self._n_updates += 1
             if not continue_training:
                 break
-
+        
+        # 计算解释方差，用于衡量价值函数的预测效果，当等于1时表示预测的完全正确，当为0时表示预测完全不相关
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
-        # Logs
+        # Logs 打印日志
         self.logger.record("train/entropy_loss_disc", np.mean(entropy_losses_disc))
         self.logger.record("train/entropy_loss_con", np.mean(entropy_losses_con))
         self.logger.record("train/policy_gradient_loss_disc", np.mean(pg_losses_disc))
@@ -283,6 +301,7 @@ class HyPPO(HyOnPolicyAlgorithm):
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
+            # 因为裁剪范围会变化，所以也记录一下变化的情况
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(

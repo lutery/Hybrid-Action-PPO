@@ -5305,3 +5305,924 @@ model.learn(total_timesteps=100000)
 
 希望这个详细的解释能帮助你理解离散状态空间的本质！🎯
 
+
+# 离散动作分布的熵计算
+
+根据代码上下文，选中的 `distribution_disc.entropy()` 是计算**离散动作分布（Categorical Distribution）的熵**。
+
+## 一、熵的数学定义
+
+### 1. 离散分布的熵公式
+
+```python
+# 对于离散动作分布（Categorical Distribution）
+# 假设有 n 个离散动作，每个动作的概率为 p_i
+
+H(π) = -Σ p_i * log(p_i)  # i = 1 到 n
+```
+
+**物理含义**：
+- 熵衡量**分布的不确定性/随机性**
+- 熵越高 → 分布越均匀 → 探索性越强
+- 熵越低 → 分布越集中 → 更确定（接近确定性策略）
+
+---
+
+##二、Stable-Baselines3 中的实现
+
+### 1. `CategoricalDistribution.entropy()` 源码
+
+来自 `stable_baselines3/common/distributions.py:190-196`：
+
+```python
+class CategoricalDistribution(Distribution):
+    """离散动作的分类分布"""
+    
+    def __init__(self, action_dim: int):
+        super().__init__()
+        self.distribution: Optional[Categorical] = None
+        self.action_dim = action_dim
+    
+    def proba_distribution(self, action_logits: th.Tensor) -> "CategoricalDistribution":
+        """
+        从 logits 创建分布对象
+        
+        参数:
+            action_logits: (batch_size, n_actions) 未归一化的对数几率
+        """
+        # 🔑 关键：使用 PyTorch 的 Categorical 分布
+        self.distribution = Categorical(logits=action_logits)
+        return self
+    
+    def entropy(self) -> th.Tensor:
+        """
+        计算分布的熵
+        
+        返回:
+            (batch_size,) 每个样本的熵值
+        """
+        # 🔑 直接调用 PyTorch 的 entropy() 方法
+        return self.distribution.entropy()
+```
+
+### 2. PyTorch `Categorical.entropy()` 的实现
+
+来自 `torch/distributions/categorical.py`：
+
+```python
+class Categorical(Distribution):
+    def entropy(self):
+        """
+        计算熵: H = -Σ p * log(p)
+        """
+        # 获取动作概率（自动 softmax）
+        p = self.probs  # shape: (batch_size, n_actions)
+        
+        # 计算 -Σ p * log(p)
+        # 使用 xlogy 避免 0 * log(0) = NaN 的问题
+        return -(p * p.log()).sum(-1)  # shape: (batch_size,)
+```
+
+---
+
+## 三、完整的熵计算流程
+
+### 1. 在 `evaluate_actions` 中的调用
+
+```python
+# hy_policies.py:616-645
+def evaluate_actions(self, obs, actions_disc, actions_con):
+    """
+    重新评估动作的对数概率和熵（用于 PPO 训练）
+    """
+    # ========== 步骤 1：提取特征 ==========
+    features = self.extract_features(obs)  # (batch_size, feature_dim)
+    
+    # ========== 步骤 2：获取离散动作嵌入 ==========
+    latent_pi_disc = self.mlp_extractor.forward_actor_disc(features.detach())
+    # latent_pi_disc: (batch_size, latent_dim_pi)
+    
+    # ========== 步骤 3：创建离散动作分布 ==========
+    distribution_disc = self._get_action_dist_from_latent_disc(latent_pi_disc)
+    # 内部执行：
+    # logits = self.action_net_disc(latent_pi_disc)  # (batch_size, n_actions)
+    # distribution = Categorical(logits=logits)
+    
+    # ========== 步骤 4：计算熵 ==========
+    entropy_disc = distribution_disc.entropy()  # ← 这里！
+    # 返回: (batch_size,) 每个样本的熵值
+    
+    return values, log_prob_disc, log_prob_con, entropy_disc, entropy_con
+```
+
+### 2. 具体计算示例
+
+```python
+# ========== 示例：计算 CartPole 离散动作的熵 ==========
+
+# 假设 batch_size=4, n_actions=2（左/右）
+latent_pi_disc = torch.randn(4, 64)  # 离散动作嵌入
+
+# 步骤 1：通过输出层得到 logits
+logits = self.action_net_disc(latent_pi_disc)
+# logits.shape: (4, 2)
+# logits 示例值:
+# tensor([[2.5, -1.2],   # 样本 0：更倾向动作 0
+#         [0.1, 0.3],    # 样本 1：接近均匀
+#         [-1.0, 2.0],   # 样本 2：更倾向动作 1
+#         [3.0, -2.5]])  # 样本 3：非常确定动作 0
+
+# 步骤 2：创建 Categorical 分布
+distribution = Categorical(logits=logits)
+
+# 步骤 3：自动计算概率（softmax）
+probs = distribution.probs
+# probs.shape: (4, 2)
+# tensor([[0.973, 0.027],  # 样本 0：97.3% 选动作 0
+#         [0.475, 0.525],  # 样本 1：几乎均匀
+#         [0.047, 0.953],  # 样本 2：95.3% 选动作 1
+#         [0.995, 0.005]]) # 样本 3：99.5% 选动作 0
+
+# 步骤 4：计算熵
+entropy = distribution.entropy()
+# entropy.shape: (4,)
+
+# 手动计算验证（以样本 0 为例）:
+p = probs[0]  # [0.973, 0.027]
+H = -(p * p.log()).sum()
+# = -(0.973 * log(0.973) + 0.027 * log(0.027))
+# = -(0.973 * (-0.027) + 0.027 * (-3.611))
+# = -(-0.026 - 0.098)
+# = 0.124  # 很低的熵，表示分布很确定
+
+# 完整的熵值:
+# tensor([0.124,  # 样本 0：很确定（低熵）
+#         0.693,  # 样本 1：最大熵（均匀分布）
+#         0.167,  # 样本 2：很确定
+#         0.037]) # 样本 3：非常确定
+```
+
+---
+
+## 四、熵在 PPO 训练中的作用
+
+### 1. 熵损失的计算
+
+在 `hy_ppo.py:214-220` 中：
+
+```python
+# ========== 步骤 1：获取熵 ==========
+entropy_disc = distribution_disc.entropy()  # (batch_size,)
+
+# ========== 步骤 2：计算熵损失 ==========
+if entropy_disc is None:
+    # 近似熵（当没有解析形式时）
+    entropy_loss_disc = -th.mean(-log_prob_disc)
+else:
+    # 真实熵的负数（因为我们要最大化熵）
+    entropy_loss_disc = -th.mean(entropy_disc)
+
+# ========== 步骤 3：加入总损失 ==========
+loss_disc = policy_loss_disc + self.ent_coef_disc * entropy_loss_disc
+#                                ^^^^^^^^^^^^^^^^
+#                                熵系数（控制探索强度）
+```
+
+### 2. 熵的作用
+
+| 作用 | 说明 |
+|------|------|
+| **鼓励探索** | 熵高 → 动作分布均匀 → agent 尝试更多动作 |
+| **防止过早收敛** | 避免策略过快收敛到次优解 |
+| **正则化** | 防止策略过拟合特定轨迹 |
+| **可控衰减** | 通过 `ent_coef` 控制探索程度（可随训练递减） |
+
+### 3. 熵系数的影响
+
+```python
+# ========== 场景 1：高熵系数（强探索）==========
+ent_coef_disc = 0.1  # 高值
+
+# 训练早期：
+# - 熵损失权重大
+# - 模型倾向于保持高熵（均匀分布）
+# - 探索更多样
+
+# ========== 场景 2：低熵系数（弱探索）==========
+ent_coef_disc = 0.001  # 低值
+
+# 训练后期：
+# - 熵损失权重小
+# - 模型可以收敛到确定性策略
+# - 利用已学到的知识
+
+# ========== 场景 3：熵衰减（推荐）==========
+# 随训练进行逐渐降低熵系数
+def entropy_schedule(progress):
+    return 0.1 * (1 - progress)  # 从 0.1 线性降到 0
+```
+
+---
+
+## 五、离散 vs 连续动作的熵计算差异
+
+### 1. 离散动作（Categorical Distribution）
+
+```python
+# 熵公式
+H = -Σ p_i * log(p_i)
+
+# 最大熵（均匀分布）
+H_max = log(n_actions)  # n_actions 是动作数量
+
+# 示例：2 个动作（CartPole）
+H_max = log(2) = 0.693
+
+# 示例：4 个动作（Atari）
+H_max = log(4) = 1.386
+```
+
+### 2. 连续动作（Diagonal Gaussian Distribution）
+
+在 `hy_policies.py:641-645` 中也计算了连续动作的熵：
+
+```python
+# 连续动作熵的计算
+entropy_con = distribution_con.entropy()
+
+# DiagGaussianDistribution.entropy() 的实现：
+def entropy(self) -> th.Tensor:
+    """
+    多元高斯分布的熵：
+    H = 0.5 * (k * (1 + log(2π)) + Σ log(σ_i²))
+    
+    其中：
+    - k 是动作维度
+    - σ_i 是每个维度的标准差
+    """
+    return 0.5 + 0.5 * math.log(2 * math.pi) + th.sum(self.log_std, dim=-1)
+```
+
+**差异总结**：
+
+| 特性 | 离散动作 | 连续动作 |
+|------|---------|---------|
+| **分布类型** | Categorical | Diagonal Gaussian |
+| **熵公式** | `-Σ p*log(p)` | `0.5*(k*(1+log(2π)) + Σlog(σ²))` |
+| **最大熵** | `log(n_actions)` | 无上界（σ → ∞ 时） |
+| **依赖参数** | 动作概率 p | 标准差 σ |
+| **计算复杂度** | O(n_actions) | O(action_dim) |
+
+---
+
+## 六、熵的典型值范围
+
+### 1. 离散动作（以 CartPole 为例）
+
+```python
+# CartPole: 2 个离散动作（左/右）
+
+# ========== 不同策略的熵值 ==========
+# 1. 确定性策略（完全确定）
+probs = [1.0, 0.0]  # 总是向左
+entropy = 0.0  # 最小熵
+
+# 2. 几乎确定的策略
+probs = [0.9, 0.1]
+entropy ≈ 0.325
+
+# 3. 略微倾向的策略
+probs = [0.7, 0.3]
+entropy ≈ 0.611
+
+# 4. 均匀分布（最大探索）
+probs = [0.5, 0.5]
+entropy = log(2) = 0.693  # 最大熵
+
+# ========== 训练过程中的典型变化 ==========
+# 初期：entropy ≈ 0.6-0.7（高探索）
+# 中期：entropy ≈ 0.3-0.5（平衡）
+# 后期：entropy ≈ 0.0-0.2（低探索，接近确定性）
+```
+
+### 2. 连续动作（以 HalfCheetah 为例）
+
+```python
+# HalfCheetah: 6 维连续动作
+
+# 熵主要由 log_std 控制
+# 典型值：
+# 初期：log_std ≈ 0.0 → std ≈ 1.0 → 高熵（强探索）
+# 后期：log_std ≈ -2.0 → std ≈ 0.135 → 低熵（弱探索）
+```
+
+---
+
+## 七、调试熵的常用技巧
+
+### 1. 监控熵的变化
+
+```python
+# 在训练循环中记录熵
+entropy_disc_mean = entropy_disc.mean().item()
+print(f"Epoch {epoch}, Mean Entropy (Discrete): {entropy_disc_mean:.4f}")
+
+# 典型的健康训练曲线：
+# Epoch 0: 0.650 (高探索)
+# Epoch 50: 0.450 (平衡)
+# Epoch 100: 0.250 (收敛中)
+# Epoch 200: 0.100 (接近确定性)
+```
+
+### 2. 检查熵是否异常
+
+```python
+# ❌ 问题 1：熵过早降到接近 0
+# 原因：ent_coef 太小，策略过快收敛
+# 解决：增大 ent_coef 或使用熵衰减
+
+# ❌ 问题 2：熵始终接近最大值
+# 原因：ent_coef 太大，策略无法收敛
+# 解决：减小 ent_coef
+
+# ❌ 问题 3：熵值为 NaN
+# 原因：log(0) 或数值不稳定
+# 解决：检查 logits 是否异常（过大/过小）
+```
+
+---
+
+## 八、总结
+
+### 核心流程
+
+```python
+# ========== 完整的熵计算流程 ==========
+
+# 1️⃣ 前向传播
+latent_pi_disc = mlp_extractor.forward_actor_disc(features)
+
+# 2️⃣ 生成 logits
+logits = action_net_disc(latent_pi_disc)  # (batch_size, n_actions)
+
+# 3️⃣ 创建分布
+distribution = Categorical(logits=logits)
+
+# 4️⃣ 计算熵
+entropy = distribution.entropy()  # (batch_size,)
+# 内部实现：
+#   probs = softmax(logits)
+#   entropy = -(probs * probs.log()).sum(-1)
+
+# 5️⃣ 用于损失计算
+entropy_loss = -entropy.mean()
+total_loss = policy_loss + ent_coef * entropy_loss
+```
+
+### 关键要点
+
+| 要点 | 说明 |
+|------|------|
+| **数学公式** | `H = -Σ p*log(p)` |
+| **PyTorch 实现** | `Categorical(logits).entropy()` |
+| **取值范围** | `[0, log(n_actions)]` |
+| **训练作用** | 鼓励探索，防止过早收敛 |
+| **调优参数** | `ent_coef_disc`（熵系数） |
+| **监控指标** | 训练过程中应逐渐降低 |
+
+**关键洞察**：熵的计算虽然简单（一行代码），但它是 PPO 探索-利用平衡的核心机制，通过 `ent_coef` 控制探索强度，是调优 RL 算法的重要杠杆！🎯
+
+# 连续动作分布的熵计算
+
+根据代码分析，选中的 `distribution_con.entropy()` 是计算**连续动作分布（Diagonal Gaussian Distribution）的熵**。
+
+## 一、连续动作分布的数学基础
+
+### 1. 多元高斯分布的熵公式
+
+```python
+# 对于对角高斯分布（Diagonal Gaussian Distribution）
+# 假设有 k 个连续动作维度，每个维度独立（协方差矩阵为对角矩阵）
+
+H(π) = 0.5 * k * (1 + log(2π)) + 0.5 * Σ log(σᵢ²)
+     = 0.5 * k * (1 + log(2π)) + Σ log(σᵢ)
+```
+
+**其中**：
+- `k`：动作维度数（如 HalfCheetah 的 6 维）
+- `σᵢ`：第 i 个动作维度的标准差
+- `log(σᵢ)`：在代码中存储为 `log_std`
+
+**物理含义**：
+- 熵衡量分布的**不确定性/分散程度**
+- 标准差 σ 越大 → 熵越高 → 探索范围越广
+- 标准差 σ 越小 → 熵越低 → 动作越确定
+
+---
+
+## 二、Stable-Baselines3 中的实现
+
+### 1. `DiagGaussianDistribution.entropy()` 源码
+
+来自 `stable_baselines3/common/distributions.py:118-129`：
+
+```python
+class DiagGaussianDistribution(Distribution):
+    """
+    对角高斯分布（各维度独立的多元高斯分布）
+    用于连续动作空间
+    """
+    
+    def __init__(self, action_dim: int):
+        super().__init__()
+        self.distribution: Optional[Normal] = None
+        self.gaussian_actions: Optional[th.Tensor] = None
+        self.action_dim = action_dim
+    
+    def proba_distribution_net(
+        self, 
+        latent_dim: int, 
+        log_std_init: float = 0.0
+    ) -> Tuple[nn.Module, nn.Parameter]:
+        """
+        创建表示分布的层和参数：
+        - 均值输出层（nn.Linear）
+        - 对数标准差参数（nn.Parameter，可学习）
+        
+        返回:
+            (mean_actions_net, log_std): 元组
+                - mean_actions_net: 输出动作均值的线性层
+                - log_std: 可学习的对数标准差参数
+        """
+        mean_actions = nn.Linear(latent_dim, self.action_dim)
+        # 🔑 关键：log_std 是一个可学习的参数
+        log_std = nn.Parameter(
+            th.ones(self.action_dim) * log_std_init, 
+            requires_grad=True
+        )
+        return mean_actions, log_std
+    
+    def proba_distribution(
+        self, 
+        mean_actions: th.Tensor, 
+        log_std: th.Tensor
+    ) -> "DiagGaussianDistribution":
+        """
+        从均值和对数标准差创建分布对象
+        
+        参数:
+            mean_actions: (batch_size, action_dim) 动作均值
+            log_std: (action_dim,) 对数标准差参数
+        """
+        # 计算标准差（指数变换）
+        action_std = th.ones_like(mean_actions) * log_std.exp()
+        
+        # 🔑 创建独立的正态分布（每个维度独立）
+        self.distribution = Normal(mean_actions, action_std)
+        return self
+    
+    def entropy(self) -> th.Tensor:
+        """
+        计算对角高斯分布的熵
+        
+        公式: H = 0.5 * (k * (1 + log(2π)) + Σ log(σ²))
+             = 0.5 + 0.5 * log(2π) + Σ log(σ)
+        
+        返回:
+            (batch_size,) 每个样本的熵值
+        """
+        # 🔑 PyTorch 的 Normal 分布自带 entropy() 方法
+        # 对每个维度的熵求和（因为维度独立）
+        return self.distribution.entropy().sum(dim=-1)
+```
+
+### 2. PyTorch `Normal.entropy()` 的实现
+
+来自 `torch/distributions/normal.py`：
+
+```python
+class Normal(Distribution):
+    """一维正态分布"""
+    
+    def entropy(self):
+        """
+        计算一维高斯分布的熵
+        
+        公式: H = 0.5 * log(2πσ²) + 0.5
+             = 0.5 * (1 + log(2π)) + log(σ)
+        """
+        return 0.5 + 0.5 * math.log(2 * math.pi) + self.scale.log()
+        #            ^^^^^^^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^
+        #            常数项（≈ 1.4189）           动态项（取决于 σ）
+```
+
+---
+
+## 三、完整的熵计算流程
+
+### 1. 在 `evaluate_actions` 中的调用
+
+```python
+# hy_policies.py:616-652
+def evaluate_actions(self, obs, actions_disc, actions_con):
+    """重新评估动作的对数概率和熵（用于 PPO 训练）"""
+    
+    # ========== 步骤 1：提取特征 ==========
+    features = self.extract_features(obs)  # (batch_size, feature_dim)
+    
+    # ========== 步骤 2：获取连续动作嵌入 ==========
+    latent_pi_con = self.mlp_extractor.forward_actor_con(features.detach())
+    # latent_pi_con: (batch_size, latent_dim_pi)
+    
+    # ========== 步骤 3：创建连续动作分布 ==========
+    distribution_con = self._get_action_dist_from_latent_con(latent_pi_con)
+    # 内部执行：
+    # mean_actions = self.action_net_con(latent_pi_con)  # (batch_size, action_dim)
+    # action_std = self.log_std.exp()  # (action_dim,)
+    # distribution = Normal(mean_actions, action_std)
+    
+    # ========== 步骤 4：计算熵 ==========
+    entropy_con = distribution_con.entropy()  # ← 这里！
+    # 返回: (batch_size,) 每个样本的熵值
+    
+    return values, log_prob_disc, log_prob_con, entropy_disc, entropy_con
+```
+
+### 2. 具体计算示例
+
+```python
+# ========== 示例：计算 HalfCheetah 连续动作的熵 ==========
+
+# 假设：
+# - batch_size = 4
+# - action_dim = 6（HalfCheetah 的 6 个关节）
+# - log_std = [-0.5, -0.5, -0.5, -0.5, -0.5, -0.5]（可学习参数）
+
+latent_pi_con = torch.randn(4, 64)  # 连续动作嵌入
+
+# ========== 步骤 1：计算均值 ==========
+mean_actions = self.action_net_con(latent_pi_con)
+# mean_actions.shape: (4, 6)
+# 示例值:
+# tensor([[ 0.5, -0.3,  0.2,  0.1, -0.4,  0.6],   # 样本 0
+#         [-0.2,  0.4, -0.1,  0.3,  0.5, -0.2],   # 样本 1
+#         [ 0.1,  0.2,  0.3, -0.5,  0.1,  0.4],   # 样本 2
+#         [ 0.3, -0.1,  0.5,  0.2, -0.3,  0.1]])  # 样本 3
+
+# ========== 步骤 2：计算标准差 ==========
+log_std = torch.tensor([-0.5, -0.5, -0.5, -0.5, -0.5, -0.5])  # 可学习参数
+std = log_std.exp()
+# std = exp(-0.5) ≈ 0.606
+# std: tensor([0.606, 0.606, 0.606, 0.606, 0.606, 0.606])
+
+# ========== 步骤 3：创建分布 ==========
+distribution = Normal(mean_actions, std)
+# 每个样本的每个动作维度都是独立的正态分布
+
+# ========== 步骤 4：计算每个维度的熵 ==========
+# 单个维度的熵公式：
+# H_single = 0.5 * (1 + log(2π)) + log(σ)
+#          = 0.5 * (1 + 1.8379) + log(0.606)
+#          = 0.5 * 2.8379 + (-0.5)
+#          = 1.4189 - 0.5
+#          = 0.9189
+
+entropy_per_dim = distribution.entropy()
+# entropy_per_dim.shape: (4, 6)
+# 每个值都约等于 0.9189（因为所有维度的 σ 相同）
+# tensor([[0.919, 0.919, 0.919, 0.919, 0.919, 0.919],  # 样本 0
+#         [0.919, 0.919, 0.919, 0.919, 0.919, 0.919],  # 样本 1
+#         [0.919, 0.919, 0.919, 0.919, 0.919, 0.919],  # 样本 2
+#         [0.919, 0.919, 0.919, 0.919, 0.919, 0.919]]) # 样本 3
+
+# ========== 步骤 5：对所有维度求和 ==========
+entropy = entropy_per_dim.sum(dim=-1)
+# entropy.shape: (4,)
+# tensor([5.514,  # 样本 0：6 * 0.919
+#         5.514,  # 样本 1
+#         5.514,  # 样本 2
+#         5.514]) # 样本 3
+
+# ========== 手动验证（以样本 0 为例）==========
+k = 6  # 动作维度
+log_std_value = -0.5
+
+H = 0.5 * k * (1 + math.log(2 * math.pi)) + k * log_std_value
+# = 0.5 * 6 * (1 + 1.8379) + 6 * (-0.5)
+# = 3 * 2.8379 - 3
+# = 8.5137 - 3
+# = 5.5137 ≈ 5.514 ✅
+```
+
+---
+
+## 四、熵在 PPO 训练中的作用
+
+### 1. 熵损失的计算
+
+在 `hy_ppo.py:218-223` 中：
+
+```python
+# ========== 步骤 1：获取熵 ==========
+entropy_con = distribution_con.entropy()  # (batch_size,)
+
+# ========== 步骤 2：计算熵损失 ==========
+if entropy_con is None:
+    # 近似熵（当没有解析形式时）
+    entropy_loss_con = -th.mean(-log_prob_con)
+else:
+    # 真实熵的负数（因为我们要最大化熵）
+    entropy_loss_con = -th.mean(entropy_con)
+
+# ========== 步骤 3：加入总损失 ==========
+loss_con = policy_loss_con + self.ent_coef_con * entropy_loss_con
+#                             ^^^^^^^^^^^^^^^
+#                             连续动作熵系数
+```
+
+### 2. 熵的动态变化
+
+```python
+# ========== 训练过程中的典型变化 ==========
+
+# 初期（强探索）：
+log_std ≈ 0.0  → std ≈ 1.0 → 每维熵 ≈ 1.42
+# 6 维总熵 ≈ 8.5
+
+# 中期（平衡）：
+log_std ≈ -0.5  → std ≈ 0.61 → 每维熵 ≈ 0.92
+# 6 维总熵 ≈ 5.5
+
+# 后期（弱探索，接近确定性）：
+log_std ≈ -2.0  → std ≈ 0.14 → 每维熵 ≈ -0.58
+# 6 维总熵 ≈ -3.5
+```
+
+---
+
+## 五、gSDE 的熵计算（特殊情况）
+
+### 1. StateDependentNoiseDistribution 的熵
+
+在 `hy_policies.py:572-576` 中，如果使用 gSDE：
+
+```python
+def _get_action_dist_from_latent_con(self, latent_pi: th.Tensor):
+    mean_actions = self.action_net_con(latent_pi)
+    
+    if isinstance(self.action_dist_con, DiagGaussianDistribution):
+        # 标准对角高斯分布
+        return self.action_dist_con.proba_distribution(mean_actions, self.log_std)
+    
+    elif isinstance(self.action_dist_con, StateDependentNoiseDistribution):
+        # 🔑 gSDE 分布（状态依赖噪声）
+        return self.action_dist_con.proba_distribution(
+            mean_actions, 
+            self.log_std, 
+            latent_pi  # ← 额外传入状态特征
+        )
+```
+
+### 2. gSDE 的熵计算公式
+
+来自 `stable_baselines3/common/distributions.py:499-520`：
+
+```python
+class StateDependentNoiseDistribution(Distribution):
+    """状态依赖噪声分布（gSDE）"""
+    
+    def proba_distribution(
+        self, 
+        mean_actions: th.Tensor,   # (batch_size, action_dim)
+        log_std: th.Tensor,        # (latent_sde_dim,)
+        latent_sde: th.Tensor      # (batch_size, latent_sde_dim)
+    ):
+        """
+        创建 gSDE 分布
+        
+        噪声计算：
+        noise = latent_sde @ exploration_mat
+        最终分布: N(mean_actions + noise, std)
+        """
+        # 状态依赖的噪声矩阵（在 reset_noise 时采样）
+        # exploration_mat: (latent_sde_dim, action_dim)
+        
+        # 计算噪声
+        noise = th.mm(latent_sde, self.exploration_mat)  # (batch_size, action_dim)
+        
+        # 最终均值
+        mean = mean_actions + noise
+        
+        # 标准差
+        std = self.get_std(log_std)
+        
+        # 创建分布
+        self.distribution = Normal(mean, std)
+        return self
+    
+    def entropy(self) -> th.Tensor:
+        """
+        gSDE 的熵计算与对角高斯相同
+        
+        公式: H = Σ(0.5 * (1 + log(2π)) + log(σ_i))
+        
+        原因：熵只取决于标准差 σ，与均值无关
+        """
+        return self.distribution.entropy().sum(dim=-1)
+```
+
+**关键点**：
+- gSDE 的熵计算与标准高斯分布**完全相同**
+- 原因：熵只取决于**分布的形状（标准差）**，与均值无关
+- 噪声矩阵只影响均值，不影响标准差
+
+---
+
+## 六、离散 vs 连续动作的熵对比
+
+### 对比表
+
+| 特性 | 离散动作（Categorical） | 连续动作（Diagonal Gaussian） |
+|------|------------------------|------------------------------|
+| **分布类型** | 分类分布 | 对角高斯分布 |
+| **熵公式** | `-Σ p*log(p)` | `0.5*k*(1+log(2π)) + Σlog(σ)` |
+| **最大熵** | `log(n_actions)` | 无上界（σ → ∞ 时） |
+| **最小熵** | 0（确定性策略） | -∞（σ → 0 时，实际受数值限制） |
+| **依赖参数** | 动作概率 p | 标准差 σ（或 log_std） |
+| **可学习参数** | 网络输出的 logits | `log_std`（独立参数） |
+| **典型初始值** | 均匀分布（最大熵） | `log_std=0.0` → `std=1.0` |
+| **训练变化** | 概率逐渐集中 | `log_std` 逐渐减小 |
+| **熵与均值关系** | 无关（只依赖 p） | 无关（只依赖 σ） |
+
+### 示例对比
+
+```python
+# ========== 离散动作（CartPole，2 个动作）==========
+# 初期：probs = [0.5, 0.5] → 熵 = log(2) = 0.693
+# 后期：probs = [0.9, 0.1] → 熵 ≈ 0.325
+
+# ========== 连续动作（HalfCheetah，6 维）==========
+# 初期：log_std = 0.0 → 总熵 ≈ 8.5
+# 后期：log_std = -2.0 → 总熵 ≈ -3.5
+
+# 关键差异：
+# - 离散动作熵的范围有上界（log(n_actions)）
+# - 连续动作熵可以是负数（当 σ < 1/√(2πe) ≈ 0.242 时）
+```
+
+---
+
+## 七、熵的典型值范围
+
+### 1. 不同标准差的熵值
+
+```python
+# 对于单个连续动作维度：
+# H_single = 0.5 * (1 + log(2π)) + log(σ)
+#          = 1.4189 + log(σ)
+
+# ========== 不同 σ 的熵值 ==========
+σ = 2.0   → log(σ) = 0.693  → H_single = 2.112  （高探索）
+σ = 1.0   → log(σ) = 0.0    → H_single = 1.419  （中等）
+σ = 0.5   → log(σ) = -0.693 → H_single = 0.726  （低探索）
+σ = 0.1   → log(σ) = -2.303 → H_single = -0.884 （很低，接近确定）
+
+# ========== 对于 6 维动作（HalfCheetah）==========
+σ = 2.0   → 总熵 ≈ 12.67
+σ = 1.0   → 总熵 ≈ 8.51
+σ = 0.5   → 总熵 ≈ 4.36
+σ = 0.1   → 总熵 ≈ -5.30
+```
+
+### 2. 训练过程中的监控
+
+```python
+# 在训练循环中记录熵和 log_std
+entropy_con_mean = entropy_con.mean().item()
+log_std_mean = self.policy.log_std.mean().item()
+
+print(f"Epoch {epoch}:")
+print(f"  Mean Entropy (Continuous): {entropy_con_mean:.4f}")
+print(f"  Mean Log Std: {log_std_mean:.4f}")
+print(f"  Mean Std: {math.exp(log_std_mean):.4f}")
+
+# 典型的健康训练曲线：
+# Epoch 0:   Entropy=8.5,  log_std=0.0,  std=1.0   (高探索)
+# Epoch 50:  Entropy=5.5,  log_std=-0.5, std=0.61  (平衡)
+# Epoch 100: Entropy=2.0,  log_std=-1.2, std=0.30  (收敛中)
+# Epoch 200: Entropy=-1.0, log_std=-1.8, std=0.17  (接近确定)
+```
+
+---
+
+## 八、调试熵的常用技巧
+
+### 1. 检查熵是否异常
+
+```python
+# ❌ 问题 1：熵值为 NaN
+# 原因：log_std 过大或过小，导致数值溢出
+# 解决：限制 log_std 的范围（如 [-20, 2]）
+
+# ❌ 问题 2：熵值过早降到很低（如 < -5）
+# 原因：ent_coef_con 太小，策略收敛过快
+# 解决：增大 ent_coef_con 或使用熵系数衰减
+
+# ❌ 问题 3：熵值始终很高（如 > 10）
+# 原因：ent_coef_con 太大，log_std 无法下降
+# 解决：减小 ent_coef_con
+
+# ❌ 问题 4：熵值波动剧烈
+# 原因：学习率过大或 log_std 更新不稳定
+# 解决：降低学习率或对 log_std 使用单独的优化器
+```
+
+### 2. 熵系数的动态调整
+
+```python
+# ========== 方法 1：线性衰减 ==========
+def entropy_schedule(progress):
+    """从 0.01 线性衰减到 0.001"""
+    return 0.01 * (1 - 0.9 * progress)
+
+# ========== 方法 2：指数衰减 ==========
+def entropy_schedule(progress):
+    """指数衰减"""
+    return 0.01 * (0.1 ** progress)
+
+# ========== 方法 3：自适应调整 ==========
+# 根据熵值动态调整系数
+if entropy_mean < target_entropy * 0.5:
+    ent_coef_con *= 1.1  # 熵太低，增大系数
+elif entropy_mean > target_entropy * 2.0:
+    ent_coef_con *= 0.9  # 熵太高，减小系数
+```
+
+---
+
+## 九、总结
+
+### 核心流程
+
+```python
+# ========== 完整的连续动作熵计算流程 ==========
+
+# 1️⃣ 前向传播
+latent_pi_con = mlp_extractor.forward_actor_con(features)
+
+# 2️⃣ 生成均值
+mean_actions = action_net_con(latent_pi_con)  # (batch_size, action_dim)
+
+# 3️⃣ 计算标准差
+std = log_std.exp()  # (action_dim,)
+
+# 4️⃣ 创建分布
+distribution = Normal(mean_actions, std)
+
+# 5️⃣ 计算每个维度的熵
+entropy_per_dim = distribution.entropy()  # (batch_size, action_dim)
+# 单个维度公式：H = 0.5 * (1 + log(2π)) + log(σ)
+
+# 6️⃣ 对所有维度求和
+entropy = entropy_per_dim.sum(dim=-1)  # (batch_size,)
+# 总熵公式：H_total = k * (0.5 * (1 + log(2π))) + Σ log(σᵢ)
+
+# 7️⃣ 用于损失计算
+entropy_loss = -entropy.mean()
+total_loss = policy_loss + ent_coef_con * entropy_loss
+```
+
+### 关键要点
+
+| 要点 | 说明 |
+|------|------|
+| **数学公式** | `H = 0.5*k*(1+log(2π)) + Σlog(σ)` |
+| **PyTorch 实现** | `Normal(mean, std).entropy().sum(dim=-1)` |
+| **取值范围** | `(-∞, +∞)`（取决于 σ） |
+| **可学习参数** | `log_std`（独立于网络的参数） |
+| **训练作用** | 控制探索强度，防止过早收敛 |
+| **调优参数** | `ent_coef_con`（连续动作熵系数） |
+| **监控指标** | 训练过程中应逐渐降低 |
+| **与均值关系** | 无关（只取决于标准差 σ） |
+
+### 关键洞察
+
+1. **连续动作的熵可以是负数**：当 `σ < 1/√(2πe) ≈ 0.242` 时，熵为负
+2. **熵只取决于标准差**：无论均值如何变化，熵保持不变
+3. **gSDE 的熵计算相同**：噪声矩阵只影响均值，不影响熵
+4. **`log_std` 是关键**：它是唯一控制连续动作探索强度的可学习参数
+
+**实践建议**：
+- 初始化 `log_std=0.0`（对应 `std=1.0`）是一个好的起点
+- 监控 `log_std` 的变化趋势，确保它逐渐下降
+- 使用熵系数衰减策略，平衡探索与利用
+- 如果任务需要高精度控制，可以让 `log_std` 降到 -2.0 左右
+
+**核心公式记忆**：
+```
+连续动作熵 = 1.4189 * k + Σ log(σᵢ)
+            ^^^^^^^^^^^   ^^^^^^^^^^
+            常数项        动态项（可学习）
+```
+
+这个公式简洁地揭示了连续动作熵的本质：它是一个**常数项加上对数标准差的和**，通过训练 `log_std` 参数来控制探索强度！🎯

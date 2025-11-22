@@ -108,7 +108,7 @@ class HyBaseAlgorithm(ABC):
         self.use_sde = use_sde
         self.sde_sample_freq = sde_sample_freq
         # Track the training progress remaining (from 1 to 0)
-        # this is used to update the learning rate
+        # this is used to update the learning rate 训练的进度，未完成则1.0，然后更具训练的轮数逐渐降低
         self._current_progress_remaining = 1.0
         # Buffers for logging
         self._stats_window_size = stats_window_size
@@ -288,15 +288,18 @@ class HyBaseAlgorithm(ABC):
         self.lr_schedule = get_schedule_fn(self.learning_rate)
 
     def _update_current_progress_remaining(self, num_timesteps: int, total_timesteps: int) -> None:
+        # 更新当前训练的进度
  
         self._current_progress_remaining = 1.0 - float(num_timesteps) / float(total_timesteps)
 
     def _update_learning_rate(self, optimizers: Union[List[th.optim.Optimizer], th.optim.Optimizer]) -> None:
+        # 根据训练的进度，计算当前学习率大小
         self.logger.record("train/learning_rate", self.lr_schedule(self._current_progress_remaining))
 
         if not isinstance(optimizers, list):
             optimizers = [optimizers]
         for optimizer in optimizers:
+            #这个方法里面会直接修改优化器的学习率
             update_learning_rate(optimizer, self.lr_schedule(self._current_progress_remaining))
 
     def _excluded_save_params(self) -> List[str]:

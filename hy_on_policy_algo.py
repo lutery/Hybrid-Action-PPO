@@ -215,6 +215,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
         # 计算整个样本的优势和回报
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
+        # 回调通知采样结束
         callback.on_rollout_end()
 
         return True
@@ -258,16 +259,18 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
         assert self.env is not None
 
         while self.num_timesteps < total_timesteps:
-            # 收集一批rollout数据
+            # 先采集样本
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
+            # 如果遇到了中断，即在回调中判断到采集样本时的回报足够了，则直接中断训练
             if continue_training is False:
                 break
-
+            
+            # 然后开始训练
             iteration += 1
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
 
-            # Display training infos
+            # Display training infos 打印训练过程中的日志
             if log_interval is not None and iteration % log_interval == 0:
                 assert self.ep_info_buffer is not None
                 time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
@@ -283,6 +286,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
 
             self.train()
 
+        # 回调通知训练结束
         callback.on_training_end()
 
         return self
