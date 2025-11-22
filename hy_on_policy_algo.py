@@ -109,7 +109,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
         assert self._last_obs is not None, "No previous observation was provided"
         self.policy.set_training_mode(False)
 
-        n_steps = 0
+        n_steps = 0 # 采集的步数统计，就算并行环境，也是一步
         rollout_buffer.reset() # 重制缓冲区
         if self.use_sde:
             # 如果使用了动作连续噪音，则在这里先重制噪音的参数
@@ -130,15 +130,16 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
                 # Convert to pytorch tensor or to TensorDict 将观察转换为tensor
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 #actions_disc, actions_con, values, log_prob_disc, log_prob_con
+                # 返回预测的离散动作、连续动作、环境价值、离散动作的对数概率，连续动作的对数概率
                 actions_disc, actions_con, values, log_probs_disc, log_prob_con = self.policy(obs_tensor)
             actions_disc = actions_disc.cpu().numpy()
             actions_con = actions_con.cpu().numpy()
 
             # Rescale and perform action
-            clipped_actions_disc = actions_disc
-            clipped_actions_con = np.clip(actions_con, self.action_space_con.low, self.action_space_con.high)
+            clipped_actions_disc = actions_disc # 模拟范围裁剪，应该是为了保持命名一致
+            clipped_actions_con = np.clip(actions_con, self.action_space_con.low, self.action_space_con.high)# 对连续动作进行动作才见，防止越界
             
-            # 根据动作空间类型决定动作格式
+            # 根据动作空间类型决定动作格式，将离散动作和连续动作组合起来
             if isinstance(self.action_space, spaces.Dict):
                 # Dict 类型动作空间
                 clipped_actions = np.concatenate([clipped_actions_disc[:,None], clipped_actions_con], axis=1)
@@ -148,7 +149,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             else:
                 raise TypeError(f"Unsupported action space type: {type(self.action_space)}")
                 
-            # 处理环境可能返回的不同数量的值
+            # 处理环境可能返回的不同数量的值 执行动作
             step_result = env.step(clipped_actions)
             if len(step_result) == 5:
                 # 新版本 gym API: obs, reward, terminated, truncated, info
@@ -160,28 +161,40 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
                 new_obs, rewards, dones, infos = step_result
             else:
                 raise ValueError(f"Unexpected number of values returned by env.step(): {len(step_result)}")
+            # 每一个环境执行一步算一步，所以这里统计总步数时要统计每一个环境
             self.num_timesteps += env.num_envs
 
+            # 在每个训练步骤中，将当前作用域的局部变量更新到回调对象中，使回调能够实时访问最新的训练状态。
+            # 比如记录本的obs、预测的动作，获得的回报等等
+            # 这样做也可以避免在采集、训练流程中嵌入了太多的日志采集的代码，使得代码更加的干净
             callback.update_locals(locals())
             if callback.on_step() is False:
+                # todo 这里干嘛要返回,可能是为了能够在训练中通过回调控制流程，比如reward达到了指定的值就让其中断返回
                 return False
 
+            # 提取info中的信息，存储到缓冲区
             self._update_info_buffer(infos)
             n_steps += 1
 
             actions_disc = actions_disc.reshape(-1, 1)
 
+            # 这段代码处理的是 Gym/Gymnasium 环境中的 TimeLimit 截断问题，这是强化学习中一个重要但容易被忽视的细节
+            # 而本段代码使用的gym版本不会返回 terminated 和 truncated 两个值，而是直接返回 done，所以需要以下代码作为区分
+            # 具体查看md
             for idx, done in enumerate(dones):
                 if (
                     done
                     and infos[idx].get("terminal_observation") is not None
                     and infos[idx].get("TimeLimit.truncated", False)
-                ):
+                ): 
+                    # 如果生命周期结束，并且info中包含了终止观察值，则计算该终止观察值的环境价值
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
+                    # 将终止观察值的环境价值加到对应的奖励上
                     rewards[idx] += self.gamma * terminal_value
 
+            # 将当前时间步的数据存储到缓冲区
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions_disc,
@@ -196,9 +209,10 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             self._last_episode_starts = dones
 
         with th.no_grad():
-            # Compute value for the last timestep
+            # Compute value for the last timestep 当前采集步数达到限制后，计算最后一步的环境价值，此时是没有达到时间限制或者游戏结束，所以要单独领出来计算，主要就是为了PPO的经典计算return和advantage
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
-
+    
+        # 计算整个样本的优势和回报
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()

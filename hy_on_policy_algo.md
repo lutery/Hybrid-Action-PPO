@@ -594,3 +594,367 @@ model = HyPPO(..., total_timesteps=200000)
 ```
 
 `callback.on_training_start(locals(), globals())` 是回调系统的核心入口点，它让回调可以在训练开始时访问完整的训练上下文，从而实现强大的监控、日志和自定义功能！🎯
+
+# #codebase 结合代码，确认下callback.update_locals(locals())的作用是啥？
+
+## 核心作用
+
+**在每个训练步骤中，将当前作用域的局部变量更新到回调对象中，使回调能够实时访问最新的训练状态**。
+
+## 详细说明
+
+### 1. 在 `collect_rollouts` 中的位置
+
+```python
+# ...existing code...
+while n_steps < n_rollout_steps:
+    # ... 执行动作，获取新观察 ...
+    step_result = env.step(clipped_actions)
+    new_obs, rewards, dones, infos = step_result
+    self.num_timesteps += env.num_envs
+
+    # 🔑 关键：更新回调的本地变量
+    callback.update_locals(locals())
+    
+    # 在每步调用回调的 on_step 方法
+    if callback.on_step() is False:
+        return False  # 回调可以选择提前终止训练
+    # ...existing code...
+```
+
+### 2. `update_locals` 的实现（Stable-Baselines3）
+
+```python
+# stable_baselines3/common/callbacks.py
+class BaseCallback:
+    def update_locals(self, locals_: Dict[str, Any]) -> None:
+        """
+        更新对本地变量的引用
+        
+        :param locals_: rollout收集过程中的本地变量
+        """
+        self.locals.update(locals_)  # 更新字典
+        self.update_child_locals(locals_)  # 更新子回调
+```
+
+### 3. 更新的变量内容
+
+在 `collect_rollouts` 的上下文中，`locals()` 包含：
+
+```python
+{
+    'env': <VecEnv>,              # 环境实例
+    'callback': <BaseCallback>,   # 回调对象
+    'rollout_buffer': <HYRolloutBuffer>,  # 缓冲区
+    'n_rollout_steps': int,       # rollout步数
+    'n_steps': int,               # 当前已收集步数
+    'obs_tensor': Tensor,         # 观察张量
+    'actions_disc': ndarray,      # 离散动作
+    'actions_con': ndarray,       # 连续动作
+    'values': Tensor,             # 价值估计
+    'log_probs_disc': Tensor,     # 离散动作对数概率
+    'log_prob_con': Tensor,       # 连续动作对数概率
+    'clipped_actions': ...,       # 裁剪后的动作
+    'new_obs': ndarray,           # 新观察
+    'rewards': ndarray,           # 奖励
+    'dones': ndarray,             # 终止标志
+    'infos': List[Dict],          # 环境信息
+}
+```
+
+## 与 `on_training_start` 的区别
+
+| 方法 | 调用时机 | 传递内容 | 更新频率 |
+|------|---------|---------|---------|
+| `on_training_start(locals(), globals())` | 训练开始前**一次** | 完整传递 `learn()` 的局部变量 | 只调用1次 |
+| `update_locals(locals())` | **每个训练步骤** | 更新 `collect_rollouts()` 的局部变量 | 每步调用 |
+
+## 实际应用示例
+
+````python
+class DetailedMonitorCallback(BaseCallback):
+    """监控每步的详细信息"""
+    
+    def _on_step(self) -> bool:
+        # 通过 self.locals 访问最新的变量
+        
+        # 获取最新的奖励
+        rewards = self.locals['rewards']
+        
+        # 获取最新的动作
+        actions_disc = self.locals['actions_disc']
+        actions_con = self.locals['actions_con']
+        
+        # 获取环境信息
+        infos = self.locals['infos']
+        
+        # 记录到日志
+        if self.n_calls % 100 == 0:
+            print(f"步骤 {self.n_calls}:")
+            print(f"  平均奖励: {np.mean(rewards):.2f}")
+            print(f"  离散动作: {actions_disc[0]}")
+            print(f"  连续动作: {actions_con[0]}")
+        
+        return True  # 继续训练
+````
+
+## 为什么需要 `update_locals`？
+
+1. **实时性**：`on_training_start` 只在开始时调用一次，但训练过程中的变量（如动作、奖励）会不断变化
+2. **灵活监控**：允许回调在 `_on_step()` 中访问每步的最新数据
+3. **条件终止**：回调可以根据最新状态决定是否提前停止训练（返回 `False`）
+
+## 调用流程总结
+
+```python
+model.learn(total_timesteps=100000)
+    ↓
+callback.on_training_start(locals(), globals())  # 传递 learn() 的变量（1次）
+    ↓
+while num_timesteps < total_timesteps:
+    collect_rollouts()
+        ↓
+        for step in range(n_steps):
+            env.step()
+            ↓
+            callback.update_locals(locals())  # 更新 collect_rollouts() 的变量（每步）
+            ↓
+            callback.on_step()  # 回调可以访问最新的 self.locals
+```
+
+**关键点**：`update_locals` 确保回调在调用 `on_step()` 时能访问到**当前步骤的最新数据**，而不是训练开始时的旧数据。
+
+
+
+# 对于选中的代码，在整个训练中是什么含义？没有是否可以？执行动作之后不是本身就会返回一个new_obs和reward吗？这个不是终止状态吗？为为什么还要去info中获取？
+```
+for idx, done in enumerate(dones):
+                if (
+                    done
+                    and infos[idx].get("terminal_observation") is not None
+                    and infos[idx].get("TimeLimit.truncated", False)
+                ): 
+                    # 如果生命周期结束，并且info中包含了终止观察值，则计算该终止观察值的环境价值
+                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    with th.no_grad():
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
+                    # 将终止观察值的环境价值加到对应的奖励上
+                    rewards[idx] += self.gamma * terminal_value
+```
+
+## 核心问题：区分"真正终止"和"时间截断"
+
+### 1. 两种 Episode 结束方式
+
+````python
+# 方式1：真正的终止（True Terminal）
+# 例如：CartPole 倒下、Agent 死亡
+done = True
+reason = "任务失败/成功"
+
+# 方式2：时间限制截断（TimeLimit Truncation）
+# 例如：达到环境的 max_episode_steps
+done = True  # ⚠️ 也是 True！
+reason = "时间到了，但任务未完成"
+````
+
+### 2. 为什么需要特殊处理？
+
+#### 问题场景
+
+````python
+# 假设 CartPole 环境的 max_episode_steps=500
+# Agent 表现很好，坚持到了第 500 步才结束
+
+# 环境返回：
+obs_499, reward, done=False, info = env.step(action)  # 第 499 步
+obs_500, reward, done=True, info = env.step(action)   # 第 500 步
+
+# ⚠️ 问题：
+# done=True 可能是因为：
+# A. 真的倒下了（应该 V(s_terminal) = 0）
+# B. 时间到了但还能继续（应该 V(s_terminal) ≠ 0）
+````
+
+#### 如果不处理会怎样？
+
+````python
+# 错误的价值估计：
+# 假设 Agent 在第 500 步时 CartPole 还在稳定平衡
+# 但因为 done=True，算法会认为这是终止状态
+
+# 错误计算：
+R_t = reward_500 + γ * 0  # ❌ 错误！终止状态价值设为 0
+
+# 正确计算：
+R_t = reward_500 + γ * V(obs_500)  # ✅ 正确！obs_500 还有未来价值
+````
+
+### 3. 代码详解
+
+````python
+for idx, done in enumerate(dones):
+    # 三个条件同时满足：
+    if (
+        done  # 1️⃣ Episode 结束了
+        and infos[idx].get("terminal_observation") is not None  # 2️⃣ 有终止观察值
+        and infos[idx].get("TimeLimit.truncated", False)  # 3️⃣ 是时间截断而非真正终止
+    ):
+        # 获取"真正的最后一帧"
+        terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+        
+        # 计算这一帧的价值
+        with th.no_grad():
+            terminal_value = self.policy.predict_values(terminal_obs)[0]
+        
+        # 🔑 关键：将未来价值补偿回来
+        rewards[idx] += self.gamma * terminal_value
+````
+
+### 4. `terminal_observation` vs `new_obs`
+
+#### 区别对比
+
+| 项目 | `new_obs` | `terminal_observation` |
+|------|-----------|------------------------|
+| **什么时候存在** | 总是存在 | 只在 `TimeLimit.truncated=True` 时存在 |
+| **含义** | 重置后的新状态（第 1 步） | 截断前的真实最后状态（第 500 步） |
+| **价值** | 初始状态价值（低） | 截断时状态价值（可能高） |
+
+#### 实际例子
+
+````python
+# 在 CartPole 第 500 步时：
+
+# ====== 环境实际发生的事 ======
+step_result = env.step(action)
+
+# 旧版 API (4 个返回值)：
+# obs = 重置后的初始状态（角度=0, 速度=0）
+# reward = 第 500 步的奖励（通常是 1.0）
+# done = True（因为达到时间限制）
+# info = {
+#     'terminal_observation': array([0.1, 0.05, -0.02, 0.01]),  # ← 真实的第 500 步状态
+#     'TimeLimit.truncated': True  # ← 标记是时间截断
+# }
+
+# ====== 代码中的处理 ======
+new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+# new_obs[idx] = [0, 0, 0, 0]  # 重置后的状态（无用）
+# infos[idx]["terminal_observation"] = [0.1, 0.05, -0.02, 0.01]  # 真实的第 500 步（有用！）
+
+# ====== 如果不处理 ======
+# GAE 计算时会用 new_obs（重置状态）计算价值：
+V(reset_state) = 很低的价值  # ❌ 错误
+
+# ====== 正确处理 ======
+V(terminal_obs) = 策略网络(terminal_observation)  # ✅ 正确
+rewards[idx] += gamma * V(terminal_obs)  # 补偿未来价值
+````
+
+### 5. 完整的价值计算流程
+
+````python
+# ========== 步骤 1：收集数据 ==========
+for step in range(n_steps):
+    action = policy(obs)
+    new_obs, reward, done, info = env.step(action)
+    
+    # 🔑 关键处理
+    if done and info.get("TimeLimit.truncated"):
+        # 补偿被截断的价值
+        terminal_value = policy.predict_values(info["terminal_observation"])
+        reward += gamma * terminal_value  # ← 修正奖励
+    
+    buffer.add(obs, action, reward, done, ...)
+    obs = new_obs
+
+# ========== 步骤 2：计算优势 ==========
+# buffer.compute_returns_and_advantage()
+for t in reversed(range(n_steps)):
+    if dones[t]:
+        # 如果是真正的终止：next_value = 0
+        # 如果已经补偿过：next_value 已包含在 rewards[t] 中
+        delta = rewards[t] + 0 - values[t]
+    else:
+        delta = rewards[t] + gamma * values[t+1] - values[t]
+    
+    advantages[t] = delta + gamma * gae_lambda * advantages[t+1]
+````
+
+## 没有这段代码会怎样？
+
+### 情况 1：短 Episode（真正终止）
+
+````python
+# 例如：CartPole 在第 20 步倒下
+# ✅ 影响不大，因为 TimeLimit.truncated = False
+# 代码不会执行，按正常终止处理
+````
+
+### 情况 2：长 Episode（时间截断）
+
+````python
+# 例如：CartPole 稳定到第 500 步才结束
+# ❌ 严重影响！
+
+# 错误的价值估计：
+R_500 = reward_500 + 0  # 错误地认为是终止状态
+
+# 正确的价值估计：
+R_500 = reward_500 + gamma * V(obs_500)  # 应该加上未来价值
+
+# 结果：
+# - 训练不稳定（价值函数被低估）
+# - 收敛速度慢
+# - 最终性能下降
+````
+
+### 实际影响示例
+
+````python
+# 假设环境：CartPole，max_episode_steps=500
+
+# ========== 不处理截断 ==========
+# Agent 学到：
+# "到第 500 步就结束了，没有未来价值"
+# → 不会努力保持平衡到 500 步
+# → 平均 episode 长度：300 步
+
+# ========== 正确处理截断 ==========
+# Agent 学到：
+# "第 500 步之后还有价值，应该继续保持平衡"
+# → 努力保持到 500 步
+# → 平均 episode 长度：500 步（最大值）
+````
+
+## 新版 Gym API 的改进
+
+````python
+# 旧版 API（4 个返回值）：
+obs, reward, done, info = env.step(action)
+# 问题：done 无法区分"真正终止"和"时间截断"
+
+# 新版 API（5 个返回值）：
+obs, reward, terminated, truncated, info = env.step(action)
+# terminated: 真正的终止（任务完成/失败）
+# truncated: 时间截断（max_episode_steps）
+
+# 代码中的处理：
+if len(step_result) == 5:
+    new_obs, rewards, terminated, truncated, infos = step_result
+    dones = np.logical_or(terminated, truncated)  # 合并为 done
+````
+
+## 总结
+
+| 问题 | 答案 |
+|------|------|
+| **这段代码的含义** | 修正因时间限制截断而丢失的未来价值估计 |
+| **是否可以没有** | 可以运行，但会导致训练不稳定和性能下降 |
+| **为什么要从 info 获取** | `new_obs` 是重置后的初始状态（无用），`terminal_observation` 才是真实的最后状态（有价值） |
+| **什么时候最重要** | 长 Episode 环境（如 CartPole-500步、连续控制任务） |
+| **什么时候无影响** | 短 Episode 环境（如 Atari 游戏，通常在时间限制前就终止） |
+
+**推荐做法**：**保留这段代码**，它是 Stable-Baselines3 等主流库的标准做法，能显著提升训练质量。

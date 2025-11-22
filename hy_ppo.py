@@ -37,7 +37,7 @@ class HyPPO(HyOnPolicyAlgorithm):
         ent_coef_disc: float = 0.0, # todo
         vf_coef: float = 0.5, # todo
         max_grad_norm: float = 0.5, # 梯度裁剪
-        use_sde: bool = False, # todo 
+        use_sde: bool = False, # 是否使用连续噪音用于平滑探索
         sde_sample_freq: int = -1, # todo
         target_kl: Optional[float] = None, # todo
         stats_window_size: int = 100, # todo

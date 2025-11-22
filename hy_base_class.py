@@ -442,17 +442,26 @@ class HyBaseAlgorithm(ABC):
         return total_timesteps, callback
 
     def _update_info_buffer(self, infos: List[Dict[str, Any]], dones: Optional[np.ndarray] = None) -> None:
+        '''
+        infos: 环境step返回的信息列表   
+        dones: todo
+        '''
+
         assert self.ep_info_buffer is not None
         assert self.ep_success_buffer is not None
 
         if dones is None:
             dones = np.array([False] * len(infos))
+
+        # 从info中提取 episode 相关信息并存储到缓冲区
+        # episode 信息通常包含每个完成的生命周期的统计数据，比如总奖励、持续时间等
+        # is_success 信息用于存储任务成功与否的标志
         for idx, info in enumerate(infos):
             maybe_ep_info = info.get("episode")
             maybe_is_success = info.get("is_success")
-            if maybe_ep_info is not None:
+            if maybe_ep_info is not None: # 如果有生命周期信息则存储
                 self.ep_info_buffer.extend([maybe_ep_info])
-            if maybe_is_success is not None and dones[idx]:
+            if maybe_is_success is not None and dones[idx]: # 如果有成功标志且生命周期完成则存储
                 self.ep_success_buffer.append(maybe_is_success)
 
     def get_env(self) -> Optional[VecEnv]:

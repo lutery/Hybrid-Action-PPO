@@ -552,6 +552,8 @@ class HyActorCriticPolicy(HyBasePolicy):
         '''
         obs: 观察
         deterministic： todo 这个参数的含义
+
+        return 返回预测的离散动作、连续动作、环境价值、离散动作的对数概率，连续动作的对数概率
         '''
         
         #提取环境的特征
@@ -574,7 +576,8 @@ class HyActorCriticPolicy(HyBasePolicy):
         # 如果是True，则应该是直接返回均值，如果是false,那么可能是加入方差进行采样
         actions_con = distribution_con.get_actions(deterministic=deterministic)
         log_prob_con = distribution_con.log_prob(actions_con)
-
+        
+        # 将预测得到的离散动作和连续动作都展平
         actions_disc = actions_disc.reshape((-1, *self.action_space_disc.shape))
         actions_con = actions_con.reshape((-1, *self.action_space_con.shape))
         return actions_disc, actions_con, values, log_prob_disc, log_prob_con

@@ -83,8 +83,8 @@ class HYRolloutBuffer(BaseBuffer):
         self.action_space = action_space
         self.obs_shape = get_obs_shape(observation_space) # 应对不同类型的观测空间，获取观测的形状的帮助方法
         self.action_con_dim, self.action_disc_dim = get_action_dim(action_space) # 获取连续和离散动作的维度
-        self.pos = 0
-        self.full = False
+        self.pos = 0 # 当前缓存区的位置指针，用于计算添加数据的位置，就算满了也可以采用余数计算
+        self.full = False # 缓存区是否已满的标志，这个主要是为了在采样时确保缓存区已满，采用不同的采样方式
         self.device = get_device(device)
         self.n_envs = n_envs
         self.gae_lambda = gae_lambda
@@ -101,31 +101,44 @@ class HYRolloutBuffer(BaseBuffer):
         self.actions_disc = np.zeros((self.buffer_size, self.n_envs, self.action_disc_dim), dtype=np.float32)
         self.actions_con = np.zeros((self.buffer_size, self.n_envs, self.action_con_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32) # 存储计算得到的每一步的回报
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.log_probs_disc = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.log_probs_con = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32) # 存储计算得到的每一步的优势函数
         self.generator_ready = False
         self.pos = 0
         self.full = False
         
     def compute_returns_and_advantage(self, last_values: th.Tensor, dones: np.ndarray) -> None:
+        '''
+        计算优势函数和回报
+
+        last_values: th.Tensor 采集结束时的new_obs的价值估计 
+        dones: np.ndarray 对应采集结束时执行的动作是否导致游戏结束的标识
+        '''
+
         last_values = last_values.clone().cpu().numpy().flatten()
 
         last_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
-                next_non_terminal = 1.0 - dones
-                next_values = last_values
+                # 处理下一步的情况，而这里的下一步对应的是缓冲区中当前step的下一步的状态和价值估计
+                next_non_terminal = 1.0 - dones # 如果游戏结束则为0，否则为1
+                next_values = last_values # 采集结束时的价值估计
             else:
-                next_non_terminal = 1.0 - self.episode_starts[step + 1]
-                next_values = self.values[step + 1]
+                # 这里使用的step + 1对应的是缓冲区中当前step的下一步的状态和价值估计
+                next_non_terminal = 1.0 - self.episode_starts[step + 1] # 每下一步 如果游戏结束则为0，否则为1
+                next_values = self.values[step + 1] # 下一步的价值估计
+
+            # self.rewards[step] + self.gamma * next_values * next_non_terminal :有点类似bellman方程的形式计算Q值，不同的是如果游戏结束则不考虑下一步的价值估计，只为reward
+            # 减去 self.values[step] 应该是得到预测的value和实际的TD目标之间的差值，也就是TD误差
             delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
+            # 计算GAE优势估计，也就是计算TD误差的加权和（一个序列的优势估计，对连续的时间步的采集有优势，有的时候短时间的损失是为了更大的回报），如果为正数则表示实际回报高于预测价值（选择实际的动作，远离现有的动作预测），负数则表示低于预测价值（反之）
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.advantages[step] = last_gae_lam
-        self.returns = self.advantages + self.values
+        self.returns = self.advantages + self.values # 将减去的价值加回去价值估计，得到类似bellman目标的回报值
 
     def add(
         self,
@@ -138,6 +151,17 @@ class HYRolloutBuffer(BaseBuffer):
         log_probs_disc: th.Tensor,
         log_probs_con: th.Tensor,
         ):
+        '''
+        将一个时间步的数据添加到缓存区
+        观测 obs: np.ndarray
+        obs对应的离散动作 action_disc: np.ndarray
+        obs对应的连续动作 action_con: np.ndarray
+        奖励 reward: np.ndarray
+        回合开始标志 episode_start: np.ndarray 如果游戏结束则为True，否则为False，这个应该是用来区分不同回合的
+        价值估计 value: th.Tensor
+        离散动作的对数概率 log_probs_disc: th.Tensor
+        连续动作的对数概率 log_probs_con: th.Tensor
+        '''
         self.observations[self.pos] = np.array(obs).copy()
         self.actions_disc[self.pos] = np.array(action_disc).copy()
         self.actions_con[self.pos] = np.array(action_con).copy()
