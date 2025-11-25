@@ -89,9 +89,9 @@ class HyBaseAlgorithm(ABC):
         self.verbose = verbose # 控制日志的详细程度，比如debug日志、info日志等
         self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs # 策略网络的额外参数传递
 
-        self.num_timesteps = 0  # todo
+        self.num_timesteps = 0  # 经过的采样步数，一个环境step一次则+1
         # Used for updating schedules
-        self._total_timesteps = 0 # todo 总经过时间
+        self._total_timesteps = 0 # 总经过step步数
         # Used for computing fps, it is updated at each call of learn()
         self._num_timesteps_at_start = 0
         self.seed = seed
