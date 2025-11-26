@@ -67,7 +67,7 @@ class HyBaseAlgorithm(ABC):
         seed: Optional[int] = None, # 随机种子
         use_sde: bool = False, # todo
         sde_sample_freq: int = -1, # todo
-        supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None, # todo
+        supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None, # 设置动作空间的类型，最外层传递的是spaces.Dict, spaces.Tuple
     ) -> None:
         '''
         再base类中，主要的工作：
@@ -155,13 +155,13 @@ class HyBaseAlgorithm(ABC):
             跟踪运行统计信息（均值、方差）
             需要单独保存：训练时收集的统计信息需要在测试/部署时使用，所以需要单独保存和加载
 
-            获取原始观察：在某些情况下需要访问未标准化的原始观察值 todo 查看
+            获取原始观察：在某些情况下需要访问未标准化的原始观察值
             '''
-            self._vec_normalize_env = unwrap_vec_normalize(env) # todo 查看哪里使用
+            self._vec_normalize_env = unwrap_vec_normalize(env) # 查看哪里使用；未发现项目中那个地方有用，可能只是当前项目无用，再其他项目中可以使用
 
             if supported_action_spaces is not None:
                 # 这里应该是判断环境的动作空间类型是否在支持的范围内
-                # todo 查看实际传递的值是什么
+                # 查看实际传递的值是什么? 传递的是 spaces.Dict, spaces.Tuple
                 assert isinstance(self.action_space, supported_action_spaces), (
                     f"The algorithm only supports {supported_action_spaces} as action spaces "
                     f"but {self.action_space} was provided"
