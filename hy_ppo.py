@@ -84,7 +84,7 @@ class HyPPO(HyOnPolicyAlgorithm):
         if self.env is not None:
             # Check that `n_steps * n_envs > 1` to avoid NaN
             # when doing advantage normalization
-            buffer_size = self.env.num_envs * self.n_steps # todo 为啥要这么计算？
+            buffer_size = self.env.num_envs * self.n_steps # 为啥要这么计算？ 因为后续采样是每次采样n个环境的样本，总共采样n_steps步，然后将采样的样本送入训练，每次训练使用batch_size个样本
             assert buffer_size > 1 or (
                 not normalize_advantage
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
@@ -117,10 +117,12 @@ class HyPPO(HyOnPolicyAlgorithm):
         # Initialize schedules for policy/value clipping
         # 初始化 PPO 裁剪范围调度，动态调整裁剪范围，在训练前期可以采用较大的梯度
         # 在训练后期限制梯度的大小 todo 看后续时如何使用的？
+        # 注意如果clip_range是一个数，那么get_schedule_fn会返回一个恒定函数，每次
+        # 调用无论传入的值是多少，都会返回clip_range
         self.clip_range = get_schedule_fn(self.clip_range)
         # ========== 第3步：初始化价值函数裁剪范围（可选）==========
         if self.clip_range_vf is not None:
-            # # 确保 clip_range_vf 是正数
+            # # 确保 clip_range_vf 是数
             # todo 看后续是如何使用的？
             if isinstance(self.clip_range_vf, (float, int)):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
