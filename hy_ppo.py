@@ -32,16 +32,16 @@ class HyPPO(HyOnPolicyAlgorithm):
         gae_lambda: float = 0.95, # GAE参数
         clip_range: Union[float, Schedule] = 0.2, # PPO裁剪范围
         clip_range_vf: Union[None, float, Schedule] = None, # 价值函数裁剪范围 todo
-        normalize_advantage: bool = True, # todo
+        normalize_advantage: bool = True, # 归一化优势adv
         ent_coef_con: float = 0.0, # 同ent_coef_disc
         ent_coef_disc: float = 0.0, # 在计算损失时，熵损失的系数，用于控制器大小，防止熵损失过于主导导致动作不收敛
         vf_coef: float = 0.5, # 价值损失的权重，用于平衡不同损失之间的差异，防止整体网络受一种损失影响过大
         max_grad_norm: float = 0.5, # 梯度裁剪
         use_sde: bool = False, # 是否使用连续噪音用于平滑探索
-        sde_sample_freq: int = -1, # todo
+        sde_sample_freq: int = -1, # todo 应该是连续噪声的重新采样的频率
         target_kl: Optional[float] = None, # todo
-        stats_window_size: int = 100, # todo
-        tensorboard_log: Optional[str] = None, # todo
+        stats_window_size: int = 100, # 创建一个gym info状态存储缓冲区
+        tensorboard_log: Optional[str] = None, # 记录日志的名字
         policy_kwargs: Optional[Dict[str, Any]] = None, # todo
         verbose: int = 0, # todo
         seed: Optional[int] = None, # todo
@@ -121,10 +121,12 @@ class HyPPO(HyOnPolicyAlgorithm):
         # Initialize schedules for policy/value clipping
         # 初始化 PPO 裁剪范围调度，动态调整裁剪范围，在训练前期可以采用较大的梯度
         # 在训练后期限制梯度的大小 todo 看后续时如何使用的？
+        # 注意如果clip_range是一个数，那么get_schedule_fn会返回一个恒定函数，每次
+        # 调用无论传入的值是多少，都会返回clip_range
         self.clip_range = get_schedule_fn(self.clip_range)
         # ========== 第3步：初始化价值函数裁剪范围（可选）==========
         if self.clip_range_vf is not None:
-            # # 确保 clip_range_vf 是正数
+            # # 确保 clip_range_vf 是数
             # todo 看后续是如何使用的？
             if isinstance(self.clip_range_vf, (float, int)):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
