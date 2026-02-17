@@ -262,7 +262,7 @@ class HyOnPolicyAlgorithm(HyBaseAlgorithm):
             # 先采集样本
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
-            # 如果遇到了中断，即在回调中判断到采集样本时的回报足够了，则直接中断训练
+            # 如果遇到了中断，即在回调中收到训练结束的消息，就跳出循环，结束训练
             if continue_training is False:
                 break
             

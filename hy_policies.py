@@ -478,7 +478,7 @@ class HyActorCriticPolicy(HyBasePolicy):
         self._build_mlp_extractor()
         latent_dim_pi = self.mlp_extractor.latent_dim_pi # 获取动作网络最后一层的嵌入维度
 
-        # todo 创建动作的分布对象的网络部分 看起来是可以用于动作采样预测
+        # 创建动作的分布对象的网络部分 看起来是可以用于动作采样预测
         # # 这是一个 nn.Linear 层，输入维度为 latent_dim_pi，输出维度为离散动作数量
         # self.action_net_disc 实际上是一个 nn.Linear 线性层，由 CategoricalDistribution.proba_distribution_net() 创建
         self.action_net_disc = self.action_dist_disc.proba_distribution_net(latent_dim=latent_dim_pi)
@@ -520,22 +520,24 @@ class HyActorCriticPolicy(HyBasePolicy):
             # 对每个模块应用正交初始化
             for module, gain in module_gains.items():
                 module.apply(partial(self.init_weights, gain=gain))
+
+        # 将分离不同部分的价值预测网络的参数提取出来，方便后续构建优化器
         value_parameters = [
             self.value_net.parameters(),  # 价值预测网络
             self.mlp_extractor.value_net.parameters(), # 价值嵌入预测网络
             self.features_extractor.parameters() # 公共特征提取网络 todo 为啥公共特征提取要放在这里优化？
         ]
-        # todo 看起来像一次性将所有的动作价值预测参数全部提取出来
+        # t看起来像一次性将所有的动作价值预测参数全部提取出来
         self.value_parameters = [p for group in value_parameters for p in group]
 
-        # todo 看起来像是将所有的离散动作价值预测参数全部提取出来展平
+        # 将所有的离散动作价值预测参数全部提取出来展平，方便后续构建优化器
         disc_parameters = [
             self.action_net_disc.parameters(), # 离散动作预测网络
             self.mlp_extractor.policy_net_disc.parameters() #离散动作嵌入预测网络
         ]
         self.disc_parameters = [p for group in disc_parameters for p in group]
         
-        # todo 看起来像是将所有连续动作价值预测参数全部提取出来展平
+        # 将所有连续动作价值预测参数全部提取出来展平，方便后续构建优化器
         con_parameters = [
             self.action_net_con.parameters(), # 连续动作预测网络
             [self.log_std],  # 连续动作方差预测网络

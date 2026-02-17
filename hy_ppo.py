@@ -84,12 +84,16 @@ class HyPPO(HyOnPolicyAlgorithm):
         if self.env is not None:
             # Check that `n_steps * n_envs > 1` to avoid NaN
             # when doing advantage normalization
-            buffer_size = self.env.num_envs * self.n_steps # todo 为啥要这么计算？
+            # 以下这边计算判断涉及到后续训练时的样本采样sample，其在sample会先将
+            # 样本展品，使得其按环境顺序排列，然后再按照 batch_size 大小进行切分，
+            # 如果batch_size大小不是buffer_size的整数倍，会出现截断（比如一个环境的样本的结束部分和下一个环境的样本的开始部分会拼接在一起）
+            # 可能影响训练
+            buffer_size = self.env.num_envs * self.n_steps # 为啥要这么计算？
             assert buffer_size > 1 or (
                 not normalize_advantage
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
             # Check that the rollout buffer size is a multiple of the mini-batch size
-            untruncated_batches = buffer_size // batch_size # todo
+            untruncated_batches = buffer_size // batch_size # 看上面
             if buffer_size % batch_size > 0:
                 # 这段警告代码检查 batch_size（小批量大小）是否是 buffer_size（缓冲区大小）的因数，如果不是，会产生一个截断的小批量，可能影响训练效果。
                 # 可能影响到normalize_advantage的效果
