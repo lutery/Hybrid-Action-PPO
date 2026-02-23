@@ -39,7 +39,7 @@ class HyPPO(HyOnPolicyAlgorithm):
         max_grad_norm: float = 0.5, # 梯度裁剪
         use_sde: bool = False, # 是否使用连续噪音用于平滑探索
         sde_sample_freq: int = -1, # todo 应该是连续噪声的重新采样的频率
-        target_kl: Optional[float] = None, # todo
+        target_kl: Optional[float] = None, # 这个是用来控制新旧策略差异的，如果新旧策略的kl散度超过这个值，就提前停止训练，防止过度更新导致性能下降
         stats_window_size: int = 100, # 创建一个gym info状态存储缓冲区
         tensorboard_log: Optional[str] = None, # 记录日志的名字
         policy_kwargs: Optional[Dict[str, Any]] = None, # todo

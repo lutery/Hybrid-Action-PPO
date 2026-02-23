@@ -525,7 +525,7 @@ class HyActorCriticPolicy(HyBasePolicy):
         value_parameters = [
             self.value_net.parameters(),  # 价值预测网络
             self.mlp_extractor.value_net.parameters(), # 价值嵌入预测网络
-            self.features_extractor.parameters() # 公共特征提取网络 todo 为啥公共特征提取要放在这里优化？
+            self.features_extractor.parameters() # 公共特征提取网络，因为只有价值网络是唯一一个有明确更新目标的，比较稳定，交给其去更新
         ]
         # t看起来像一次性将所有的动作价值预测参数全部提取出来
         self.value_parameters = [p for group in value_parameters for p in group]
@@ -622,7 +622,7 @@ class HyActorCriticPolicy(HyBasePolicy):
 
     def evaluate_actions(self, obs: th.Tensor, actions_disc: th.Tensor, actions_con:th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, Optional[th.Tensor], Optional[th.Tensor]]:
         '''
-        todo
+        这里就是相当于普通版本的PPO中，用最新的模型重新计算旧数据的价值和动作概率等信息，来计算损失函数
 
         obs: 观察   
         actions_disc: 离散动作
